@@ -1,0 +1,1086 @@
+---
+title: "DESeq2 - Differential Expression Analysis of N.truncata roots under drought stress"
+output: html_notebook
+---
+
+# Install & Load libraries
+```{r}
+#Load libraries
+pacman::p_load("edgeR", "ggplot2", "ggpubr", "tidyverse", "gridExtra", "ggfortify", "pheatmap", "VennDiagram", "plotly", "ggrepel", "gprofiler2", "topGO", "dplyr", "xlsx", "tibble", "readxl", "statmod")
+```
+
+```{r}
+library(DESeq2)
+library(plotly)
+library(apeglm)
+```
+
+# Data Preprocessing:
+```{r}
+#Load Data of STAR alignment and featureCount
+data <- read.table("/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/TRU_EXC_Roots_fragmentcount.txt", header = TRUE)
+colnames(data) <- gsub("Aligned.sortedByCoord.out.bam", "", colnames(data))
+col_names <- colnames(data)
+colnames(data) <- gsub("^X", "", col_names)
+samplelist <- colnames(data)[-(1:6)]
+print(samplelist)
+```
+## dataframe of STAR aligned and featureCount data:
+```{r}
+data
+```
+
+## Prepare metadata from experimental design excel file as meta_df
+```{r}
+metadata <- c(
+  "61;excelsior;drought;roots",
+  "62;excelsior;drought;roots",
+  "63;excelsior;control;roots",
+  "64;excelsior;drought;roots",
+  "65;excelsior;control;roots",
+  "66;excelsior;control;roots",
+  "67;excelsior;control;roots",
+  "68;excelsior;drought;roots",
+  "69;excelsior;drought;roots",
+  "70;excelsior;drought;roots",
+  "71;excelsior;control;roots",
+  "72;excelsior;control;roots",
+  "85;truncata;control;roots",
+  "86;truncata;drought;roots",
+  "87;truncata;drought;roots",
+  "88;truncata;control;roots",
+  "89;truncata;drought;roots",
+  "90;truncata;control;roots",
+  "91;truncata;drought;roots",
+  "92;truncata;control;roots",
+  "93;truncata;control;roots",
+  "94;truncata;drought;roots",
+  "95;truncata;drought;roots",
+  "96;truncata;control;roots"
+)
+```
+# Create sample dataframe with metadata:
+```{r}
+
+# Define a function to generate abbreviations like ECR85 from excelsior, control, roots, 85
+generate_abbreviation <- function(line) {
+  # Split the line into components
+  components <- strsplit(line, ";")[[1]]
+  
+  # Extract metadata components
+  species <- components[2]
+  condition <- components[3]
+  location <- components[4]
+  number <- components[1]
+  
+  # Combine components to generate abbreviation
+  abbreviation <- paste0(toupper(substr(species, 1, 1)), toupper(substr(condition, 1, 1)), toupper(substr(location, 1, 1)), number)
+  
+  return(abbreviation)
+}
+
+abbreviations <- sapply(metadata, generate_abbreviation)
+
+
+# Split the metadata into ID, Species, and Condition for df conversion
+metadata_split <- strsplit(metadata, ";")
+split_abbreviations <- strsplit(abbreviations, ";")
+
+
+ID = sapply(metadata_split, `[`, 1)
+Species = sapply(metadata_split, `[`, 2)
+Condition = sapply(metadata_split, `[`, 3)
+Location = sapply(metadata_split, `[`, 4)
+
+meta_df <- data.frame(
+  ID = sapply(metadata_split, `[`, 1),
+  Species = sapply(metadata_split, `[`, 2),
+  Condition = sapply(metadata_split, `[`, 3),
+  Location = sapply(metadata_split, `[`, 4),
+  Abbrevations = sapply(split_abbreviations, "[", 1)
+)
+rownames(meta_df) <- NULL
+
+# filter out important data:
+
+# sample data:
+samples <- data.frame(row.names=meta_df$Abbrevations, Condition=meta_df$Condition, Species=meta_df$Species)
+# sample gene count data:
+count_df <- data[, -(2:6)]
+
+# Rename the sample columns of 'count_df' using the sample names
+colnames(count_df)[-(1)] <- meta_df$Abbrevations
+```
+## meta_df - dataframe of the metadata of the samples:
+```{r}
+meta_df
+```
+## count_df - dataframe of the samples and their counts:
+```{r}
+count_df
+```
+## Separate dataframe of samples under Control condition:
+```{r}
+# Identify columns containing "D"
+all_drought_samples <- grep("D", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_C <- count_df[, !colnames(count_df) %in% all_drought_samples]
+
+meta_df_C <- meta_df[!meta_df$Abbrevations %in% all_drought_samples, ]
+
+samples_C <- data.frame(row.names=meta_df_C$Abbrevations, Condition=meta_df_C$Condition, Species=meta_df_C$Species)
+print(meta_df_C)
+print(samples_C)
+```
+## Separate dataframe of samples under Drought condition:
+
+```{r}
+# Identify columns containing "C"
+all_control_samples <- grep("C", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_D <- count_df[, !colnames(count_df) %in% all_control_samples]
+
+meta_df_D <- meta_df[!meta_df$Abbrevations %in% all_control_samples, ]
+
+samples_D <- data.frame(row.names=meta_df_D$Abbrevations, Condition=meta_df_D$Condition, Species=meta_df_D$Species)
+print(meta_df_D)
+print(samples_D)
+```
+## Separate dataframe of only N.excelsior samples:
+```{r}
+# Identify columns containing "E"
+all_control_samples <- grep("T", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_E <- count_df[, !colnames(count_df) %in% all_control_samples]
+
+meta_df_E <- meta_df[!meta_df$Abbrevations %in% all_control_samples, ]
+
+samples_E <- data.frame(row.names=meta_df_E$Abbrevations, Condition=meta_df_E$Condition, Species=meta_df_E$Species)
+print(meta_df_E)
+print(samples_E)
+```
+
+## Separate dataframe of only N.truncata samples:
+```{r}
+# Identify columns containing "E"
+all_control_samples <- grep("E", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_T <- count_df[, !colnames(count_df) %in% all_control_samples]
+
+meta_df_T <- meta_df[!meta_df$Abbrevations %in% all_control_samples, ]
+
+samples_T <- data.frame(row.names=meta_df_T$Abbrevations, Condition=meta_df_T$Condition, Species=meta_df_T$Species)
+print(meta_df_T)
+print(samples_T)
+```
+
+# Dataframe of samples without outliers, detected by PCA (see other R notebook: TRU_EXC_EdgeR_DGEanalysis_notebook.rmd)
+```{r}
+# After PCA inspection, remove samples:
+#removesamples <- c("ECR71", "ECR65", "EDR61", "TCR92", "TDR95")
+removesamples <- c("TCR92")
+# Remove the specified columns from count_df
+count_df_outr <- count_df[, !colnames(count_df) %in% removesamples]
+
+meta_df_outr <- meta_df[!meta_df$Abbrevations %in% removesamples, ]
+
+samples_outr <- data.frame(row.names=meta_df_outr$Abbrevations, Condition=meta_df_outr$Condition, Species=meta_df_outr$Species)
+print(meta_df_outr)
+print(samples_outr)
+```
+## # Dataframe of N.excelsior samples without outliers,
+```{r}
+# Identify columns containing "T"
+all_control_samples <- grep("T", names(count_df_outr), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_E_outr <- count_df_outr[, !colnames(count_df_outr) %in% all_control_samples]
+
+meta_df_E_outr <- meta_df_outr[!meta_df_outr$Abbrevations %in% all_control_samples, ]
+
+samples_E_outr <- data.frame(row.names=meta_df_E_outr$Abbrevations, Condition=meta_df_E_outr$Condition, Species=meta_df_E_outr$Species)
+print(meta_df_E_outr)
+print(samples_E_outr)
+```
+# Dataframe of N.truncata samples without outliers,
+```{r}
+# Identify columns containing "E"
+all_control_samples <- grep("E", names(count_df_outr), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_T_outr <- count_df_outr[, !colnames(count_df_outr) %in% all_control_samples]
+
+meta_df_T_outr <- meta_df_outr[!meta_df_outr$Abbrevations %in% all_control_samples, ]
+
+samples_T_outr <- data.frame(row.names=meta_df_T_outr$Abbrevations, Condition=meta_df_T_outr$Condition, Species=meta_df_T_outr$Species)
+print(meta_df_T_outr)
+print(samples_T_outr)
+```
+
+# DGE Analysis
+```{r}
+calculate_num_significant_genes <- function(count_matrix, cpm_threshold, FDR = 0.05, lfc_threshold = 1.5) {
+  print(cpm_threshold)
+  # Filter genes with mean CPM > threshold
+  gene_cpm_filter <- apply(cpm(count_matrix), 1, function(x) !(mean(x) < cpm_threshold))
+  count_matrix_filtered <- count_matrix[gene_cpm_filter,]
+  size_count_matrix_filtered <- dim(count_matrix_filtered)
+  num_rows <- size_count_matrix_filtered[1]
+  #gene_keep_criteria <- rowSums(cpm(d) > 10) >= 6
+  #d_T_outr_high_cpm_filtered <- d_T_outr[gene_keep_criteria,]
+  
+  # Normalize data by TMM
+  normalized_data <- calcNormFactors(count_matrix_filtered, method = "TMM")
+  
+  # Design matrix for GLM
+  design_mat <- model.matrix(~ 0 + count_matrix$samples$group)
+  colnames(design.mat) <- levels(count_matrix$samples$group)
+
+  # GLM testing for differential expression
+  d_disp <- estimateDisp(normalized_data, robust = T)
+  d_GLM <- estimateGLMTagwiseDisp(d_disp, design_mat)
+  
+  d_fit <- glmFit(d_GLM, design_mat)
+  lrtdc <- glmLRT(d_fit, contrast = c(-1, 1))  # Compare groups: 1-control and -1-drought
+  
+  # Get the number of differentially expressed genes (at FDR < 0.05 and log2-fold-change > threshold)
+  deGLM <- decideTestsDGE(lrtdc, adjust.method = "BH", p.value = FDR, lfc = lfc_threshold)
+  significant_genes <- rownames(count_matrix_filtered)[as.logical(deGLM)]
+  num_significant_genes <- length(significant_genes)
+  print(num_rows)
+  return(list(num_rows, num_significant_genes))
+}
+
+plot_significant_genes_vs_cpm_0to1 <- function(count_matrix, num_steps = 10, FDR = 0.05, lfc_threshold = 1.5) {
+  cpm_values <- seq(0, 1, length.out = num_steps)
+  df <- data.frame(CPM_Threshold = cpm_values, Significant_Genes = numeric(length(cpm_values)), Num_Rows = numeric(length(cpm_values)))
+  
+  for (i in 1:length(cpm_values)) {
+    cpm_threshold <- cpm_values[i]
+    calculation_output <- calculate_num_significant_genes(count_matrix, cpm_threshold, FDR, lfc_threshold)
+    df[i, "Num_Rows"] <- calculation_output[[1]]  
+    df[i, "Significant_Genes"] <- calculation_output[[2]]
+  }
+  
+  sign_gene_threshold_plot <- ggplot(df, aes(x = CPM_Threshold, y = Significant_Genes)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "CPM Threshold", y = "Number of Significant Genes") +
+    theme_minimal()
+  
+  return(list(df, sign_gene_threshold_plot))
+}
+
+plot_significant_genes_vs_cpm <- function(count_matrix, max_cpm = 10, FDR = 0.05, lfc_threshold = 1.5) {
+  cpm_values <- 0:max_cpm
+  df <- data.frame(CPM_Threshold = cpm_values, Significant_Genes = numeric(length(cpm_values)), Num_Rows = numeric(length(cpm_values)))
+  
+  for (i in 1:length(cpm_values)) {
+    cpm_threshold <- cpm_values[i]
+    calculation_output <- calculate_num_significant_genes(count_matrix, cpm_threshold, FDR, lfc_threshold)
+    df[i, "Num_Rows"] <- calculation_output[[1]]  
+    df[i, "Significant_Genes"] <- calculation_output[[2]]
+  }
+  
+  sign_gene_threshold_plot <- ggplot(df, aes(x = CPM_Threshold, y = Significant_Genes)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "CPM Threshold", y = "Number of Significant Genes") +
+    theme_minimal()
+  
+  return(list(df, sign_gene_threshold_plot))
+}
+```
+
+## DGE analysis of N.truncata with DeSeq2
+```{r}
+# Create DESeqDataSet
+dds <- DESeqDataSetFromMatrix(countData = count_df_T_outr[-1], colData = samples_T_outr, design = ~Condition)
+```
+## Pre-filter samples with low count for better visualization and faster processing (not necessary, DESeq2 has independent filtering)
+```{r}
+#smallestGroupSize <- 3
+#keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+#dds <- dds[keep,]
+```
+
+```{r}
+dds <- DESeq(dds) # DESeq awaits un-normalized counts for its statistical model to hold. DESeq2 corrects for library size internally.
+resultsNames(dds) # lists the coefficients
+res <- results(dds, name="Condition_drought_vs_control")
+res <- results(dds, contrast=c("Condition","drought","control"))
+geneids = count_df$Geneid
+rownames(res) <- geneids
+
+
+# Mapping function: ID to index
+id2index <- function(id) {
+  if (id %in% rownames(res)) {
+    return(which(rownames(res) == id))
+  } else {
+    return(NA)  # Return NA if the ID is not found
+  }
+}
+
+# Mapping function: Index to ID
+index2id <- function(index) {
+  if (index >= 1 && index <= nrow(res)) {
+    return(rownames(res)[index])
+  } else {
+    return(NA)  # Return NA if the index is out of range
+  }
+}
+```
+
+## Show DGE Result of N. truncata:
+```{r}
+res
+```
+## Show DGE Result of N. truncata, with Control association log2FC values:
+```{r}
+res_C_shrink <- lfcShrink(dds, coef="Condition_drought_vs_control", type="apeglm")
+res_C_shrink    # adjust FoldChange with association to Control
+```
+## Order by p-value ascending
+```{r}
+resOrdered <- res[order(res$pvalue),]
+resOrdered
+```
+```{r}
+summary(res)
+```
+## genes count with p-values less than 0.1
+```{r}
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+## Filtering:
+
+### Plots of independent filterings:
+### Distribution of p-value over mean of normalized counts:
+```{r}
+# Calculate baseMean + 1 and -log10(p-value) for filtered and non-filtered genes
+filtered_baseMean <- res$baseMean[!use] + 1
+filtered_neglog_pvalue <- -log10(res$pvalue[!use])
+
+nonfiltered_baseMean <- res$baseMean[use] + 1
+nonfiltered_neglog_pvalue <- -log10(res$pvalue[use])
+
+# Create the plot
+plot(res$baseMean + 1, -log10(res$pvalue),
+     log = "x", xlab = "Mean of normalized counts",
+     ylab = expression(-log[10](pvalue)),
+     ylim = c(0, 30),
+     cex = 0.4, col = rgb(0, 0, 0, 0))
+
+# Mark points for filtered genes
+points(filtered_baseMean, filtered_neglog_pvalue, col = "red", pch = 15, cex = 0.3)
+
+# Mark points for non-filtered genes
+points(nonfiltered_baseMean, nonfiltered_neglog_pvalue, col = "black", pch = 15, cex = 0.3)
+
+# Add legend
+legend("topright", legend = c("Filtered genes", "Non-filtered genes"), 
+       col = c("red", "black"), pch = 16)
+
+```
+### Histogram of filtered samples:
+```{r}
+use <- res$baseMean > metadata(res)$filterThreshold
+h1 <- hist(res$pvalue[!use], breaks=0:50/50, plot=FALSE)
+h2 <- hist(res$pvalue[use], breaks=0:50/50, plot=FALSE)
+colori <- c(`do not pass`="khaki", `pass`="powderblue")
+barplot(height = rbind(h1$counts, h2$counts), beside = FALSE,
+        col = colori, space = 0, main = "", ylab="frequency", xlab = "p - value")
+text(x = c(0, length(h1$counts)), y = 0, label = paste(c(0,1)),
+     adj = c(0.5,1.7), xpd=NA)
+legend("topright", fill=rev(colori), legend=rev(names(colori)))
+```
+### Cook - Outlierdetection
+```{r}
+par(mar=c(8,5,2,2))
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2)
+```
+```{r}
+W <- res$stat
+maxCooks <- apply(assays(dds)[["cooks"]],1,max)
+idx <- !is.na(W)
+plot(rank(W[idx]), maxCooks[idx], xlab="rank of Wald statistic", 
+     ylab="maximum Cook's distance per gene",
+     ylim=c(0,5), cex=.4, col=rgb(0,0,0,.3))
+m <- ncol(dds)
+p <- 3
+abline(h=qf(.99, p, m - p))
+
+# Plot the line for the threshold value
+abline(h = metadata(res)$filterThreshold[[1]], col = "red", lty = 2)
+```
+
+### The default is to use the 99% quantile of the F(p,m-p) distribution (with p the number of parameters including the intercept and m number of samples)
+
+### Plot of filter statistic function (FDR vs quantile of mean normalized count)
+```{r}
+plot(metadata(res)$filterNumRej, 
+     type="b", ylab="number of rejections",
+     xlab="quantiles of filter")
+lines(metadata(res)$lo.fit, col="red")
+abline(v=metadata(res)$filterTheta)
+```
+
+### The results function maximizes the number of rejections (adjusted p value less than a significance level), over the quantiles of a filter statistic (the mean of normalized counts). The threshold chosen (vertical line) is the lowest quantile of the filter for which the number of rejections is within 1 residual standard deviation to the peak of a curve fit to the number of rejections over the filter quantiles:
+
+# Inspect automatic Filter of DESeq2:
+```{r}
+metadata(res)$filterThreshold
+```
+```{r}
+print(metadata(res)$alpha)
+```
+```{r}
+resNoFilt <- results(dds, independentFiltering=FALSE)
+addmargins(table(filtering=(res$padj < .1),
+                 noFiltering=(resNoFilt$padj < .1)))
+```
+
+### 30490 genes are not significant in both. 421 genes are significant (FDR < 0.1), but were filtered. 7115 non-filtered genes have FDR < 0.1.
+
+### Summary of Filtered Results:
+```{r}
+summary(res)
+```
+```{r}
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+
+### Further Filtering? by FDR = 0.05. Not Necessary, as Wald plotting also chooses low alpha fo significance.
+```{r}
+# Get the indices of rows with padj less than 0.05 and not NA
+alpha05_filter_indices <- which(!is.na(res$padj) & res$padj < 0.05)
+
+# Filter res based on the indices
+res05 <- res[alpha05_filter_indices, ]
+
+# Summary of results
+summary(res05)
+```
+### Plot Dispersion plot: Blue are kept genes, black were filtered.
+```{r}
+plotDispEsts(dds)
+```
+
+
+```{r}
+sum(res05$padj < 0.05, na.rm=TRUE)
+```
+### log2FoldChange - Significance Tests with Wald tests:
+```{r}
+# Shrink data and prepare them for plotMA:
+lfc_threshold = 1.5
+res_C_shrink_lFC2 <- lfcShrink(dds, coef=2, type="apeglm", lfcThreshold=lfc_threshold)
+rownames(res_C_shrink_lFC2) <- geneids
+
+# res_C_shrink_lFC2_alpha05 = res_C_shrink_lFC2[alpha05_filter_indices, ] # found to be not necessary
+```
+### Click all significant genes (blue points) of plotMA. Copy+Paste and run plotMA in console to interact with it by running idx. Left click for getting index, Right click to retrieve indices.
+```{r}
+ylim <- c(-12,12)
+drawLines <- function() abline(h=c(-lfc_threshold, lfc_threshold),col="dodgerblue",lwd=2)
+plotMA(res_C_shrink_lFC2, ylim=ylim); drawLines()
+#dev.off()
+idx <- identify(res_C_shrink_lFC2$baseMean, res_C_shrink_lFC2$log2FoldChange)
+res_C_shrink_lFC2 
+```
+### Get all genes of the clicked indices:
+```{r}
+identified_genes <- rownames(res)[idx]
+identified_genes
+identified_indices <- sapply(identified_genes, id2index)
+identified_indices
+```
+### Alternatively... just filter all genes by the given alpha 0.005 for which colouring of the points occurs.
+```{r}
+DEGdata <- plotMA(res_C_shrink_lFC2, ylim=ylim, returnData=TRUE)
+
+# Filter rows based on conditions, handling NA values
+filtered_rows <- as.integer(rownames(DEGdata[DEGdata$isDE == TRUE, ]))
+
+# Get the rownames of the filtered rows
+filtered_gene_ids <- sapply(filtered_rows, index2id)
+filtered_indices <- sapply(filtered_gene_ids, id2index)
+
+filtered_indices
+```
+
+# Size of filtered diff. expr genes
+```{r}
+length(filtered_gene_ids)
+```
+
+
+### Comparing both methods to retrieve gene names:
+```{r}
+# Find overlaps using intersect()
+overlapping_geneids <- intersect(filtered_gene_ids, identified_genes)
+overlapping_indices <- sapply(overlapping_geneids, id2index)
+# Calculate the percentage
+percentage <- (length(overlapping_geneids) / length(identified_genes)) * 100
+
+# Print overlapping values
+print(overlapping_indices)
+```
+
+```{r}
+# Print the percentage
+print(percentage)
+```
+```{r}
+plotCounts(dds, gene=8555, intgroup="Condition")
+
+```
+```{r}
+
+# Restructure Results for Saving:
+save_df_TRU <- res_C_shrink
+rownames(save_df_TRU) <- 1:nrow(save_df_TRU)
+#TRU_gene_indices <- sapply(TRU_Gene_ID, id2index) # If there is a subset of the results
+
+save_df_TRU
+# Add columns: svalue, Regulation, GeneID
+# change rownames to indices
+
+save_df_TRU$svalue <- res_C_shrink_lFC2$svalue
+
+save_df_TRU$Regulation <- ifelse(save_df_TRU$log2FoldChange > 0, "Upregulated", "Downregulated")
+
+save_df_TRU$Gene_ID <- geneids
+
+save_df_TRU
+colnames(save_df_TRU) <- c("BaseMeans", "logFC", "lfcSE", "PValue", "FDR", "svalue", "Regulation", "Gene_ID")
+# Reorder by Fold-Change:
+save_df_TRU <- save_df_TRU[order(save_df_TRU$logFC, na.last = NA), ]
+
+# Remove filtered samples:
+save_df_TRU <- save_df_TRU[complete.cases(save_df_TRU) , ]
+
+#specify significant genes: (from plot: svalue = 0.005 and FC = 1.5) or (FDR < 0.05)
+significant_genes <- save_df_TRU[save_df_TRU$FDR < 0.05, ]
+significant_genes
+write.csv(significant_genes, "DESeq2_DEgenes_TRU_Root_edgeR.csv")
+```
+
+# GO retrieval:
+```{r}
+pacman::p_load("BiocManager", "topGO", "stringr", "GOplot")
+library("topGO")
+library("GOplot")
+library("xtable")
+#library("drake")
+
+topGoAnalysis <- function(ontology, allGenes, gene2GO, nbNodes){
+  GOdata <- new("topGOdata", ontology = ontology, allGenes = allGenes, annot = annFUN.gene2GO, gene2GO = gene2GO)
+  resultWeight01 <- runTest(GOdata, statistic = "fisher")
+  allRes <- GenTable(GOdata, weight01_pval=resultWeight01, orderBy = "weight01", ranksOf = "weight01",topNodes = nbNodes)
+  allRes <- cbind(allRes,"BP")
+  colnames(allRes) <- c("GO.ID","Term","Annotated","Significant","Expected","weight01_pval", "branch")
+  return(allRes)
+}
+
+change_names <- function(data, name_list){
+  colnames(data) <- name_list
+  return(data)
+}
+
+rename <- function(table, geneNames){
+  names(table) <- geneNames
+  return(table)
+}
+
+attach_enriched_go_genes <- function(enriched_go_with_my_genes){
+  enriched_go_with_my_genes.list = c()
+  for (i in 1:length(enriched_go_with_my_genes)){
+    enriched_go_with_my_genes.list = c(enriched_go_with_my_genes.list, enriched_go_with_my_genes[[i]])
+  }
+  return(enriched_go_with_my_genes.list)
+}
+
+
+circle_dat <- function(terms, genes){
+  # Data Formatting
+  colnames(terms) <- tolower(colnames(terms))
+  terms$genes <- toupper(terms$genes)
+  genes$ID <- toupper(genes$ID)
+  
+  # Parse Gene Lists
+  tgenes <- strsplit(as.vector(terms$genes), ', ')
+  count <- sapply(tgenes, length)
+  
+  # Extract LogFC Values
+  if (length(tgenes[[1]]) == 1) tgenes <- strsplit(as.vector(terms$genes), ',')
+  count <- sapply(1:length(tgenes), function(x) length(tgenes[[x]]))
+  logFC <- sapply(unlist(tgenes), function(x) {
+  match_indices <- match(x, genes$ID)
+  if (any(is.na(match_indices))) {
+    # Handle NA values (no match found)
+    numeric_values <- rep(0, length(match_indices))
+    numeric_values[!is.na(match_indices)] <- genes$logFC[match_indices[!is.na(match_indices)]]
+    numeric_values
+  } else {
+    genes$logFC[match_indices]
+  }
+})
+  if(class(logFC) == 'factor'){
+    logFC <- gsub(",", ".", gsub("\\.", "", logFC))
+    logFC <- as.numeric(logFC)
+  }
+  
+  # Calculate Z-score
+  s <- 1; zsc <- c()
+  for (c in seq_along(count)) {
+    e <- s + count[c] - 1
+    value <- logFC[s:e]
+    zsc <- c(zsc, sum(value, na.rm = FALSE) / sqrt(count[c]))
+    s <- e + 1
+  }
+  
+  # Create Output Data Frame
+  df <- data.frame(
+    category = rep(as.character(terms$category), count),
+    term = rep(as.character(terms$term), count),
+    count = rep(count, count),
+    genes = as.character(unlist(tgenes)),
+    logFC = logFC,
+    adj_pval = rep(terms$adj_pval, count),
+    zscore = rep(zsc, count),
+    stringsAsFactors = FALSE
+  )
+  
+  return(df)
+}
+
+
+plot_GO <- function(data_GO,loc){
+  #read in data matrix
+  data <- read.table(data_GO, sep = "\t")
+  colnames(data) <- c("category","ID","term","count","adj_pval","zscore")
+  # define colors of bars by zscores
+  ggplot(data, aes(x=reorder(term,zscore),y=-log10(adj_pval)))+ #x=reorder(term,zscore),y=-log10(adj_pval)
+    #labs(title=paste0("Loc ",loc)) +
+    geom_col(aes(fill = zscore)) +
+    scale_fill_gradient(low="blueviolet",high="goldenrod1", 
+                        labels=c(paste0("Underexpressed","\n","in L"),
+                                 paste0("Overexpressed","\n", "in L")),
+                        breaks=c(min(data$zscore),max(data$zscore)),
+                        limits=c(min(data$zscore),max(data$zscore))) +
+    geom_text(aes(label=count), 
+              hjust=-1, size=5) +
+    xlab("")+
+    theme_bw()+
+    coord_flip(ylim = c(0, 5.3)) +
+    #scale_y_reverse() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank())+
+    #coord_cartesian(ylim = c(0, 4.6))+
+    theme(axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.3,
+      vjust = 0.5))+
+    theme(text=element_text(family="Arial"))+
+    theme(axis.text=element_text(size=15), axis.text.y = element_text(size=15)) +
+    #       axis.title=element_text(size=14,face="bold"))
+    theme(legend.text=element_text(size=13),
+          legend.title = element_text(size=15, vjust=2.1),
+          axis.title.x = element_text(size=15))
+}
+
+#Make barplot of up and down-regulated functions
+GOBar <- function(data, display, order.by.zscore = T, title, zsc.col, contrast){
+  id <- adj_pval <- zscore <- NULL
+  colnames(data) <- tolower(colnames(data))
+  data$adj_pval <- -log(data$adj_pval, 10)
+  sub <- data[!duplicated(data$term), ]
+  sub <- sub[order(sub$zscore, decreasing = T), ]
+  print(min(sub$zscore))
+  print(max(sub$zscore))
+  g <-  ggplot(sub, aes(y = factor(term, levels = rev(unique(stats::reorder(term, adj_pval)))), x = adj_pval, fill = zscore)) +
+    geom_bar(stat = 'identity', position=position_dodge()) +
+    theme_bw() +
+    scale_fill_gradient2('Log(FC)\n(z-score)\n', space = 'Lab',
+                     guide = guide_colourbar(title.position = "top", title.hjust = 0),
+                     breaks = c(min(sub$zscore), max(sub$zscore)),
+                     low = "blue", mid = "white", high = "red") +
+    scale_color_manual(values=c("black", "black", "black"), guide = "none") +
+    labs(title = '', y = '', x = '-log (adj p-value)') +
+    geom_text(aes(y=term, x=-0.4, label=count, color = "black")) + theme(axis.text.y = element_text(size = 12))
+  g
+  
+# plot a single gene
+plot_gene_expression <- function(gene_identifier, dds_TRU, dds_EXC, log10scale = TRUE) {
+  if (log10scale == TRUE) {
+    transformbool <- TRUE
+  } else {
+    transformbool <- FALSE
+  }
+
+  # Determine if gene_identifier is an index or a name
+  if (is.numeric(gene_identifier)) {
+    gene_index <- gene_identifier
+    gene_id <- index2id(gene_index)
+  } else {
+    # Convert gene name to index using id2index function
+    gene_id <- gene_identifier
+    gene_index <- id2index(gene_id)
+  }
+  
+  # Extract expression values for the gene of interest from both dds objects
+  gene_values_dds1 <- counts(dds_TRU)[gene_index, ]
+  gene_values_dds2 <- counts(dds_EXC)[gene_index, ]
+
+  # Determine common y limits
+  common_y_lim <- range(c(gene_values_dds1, gene_values_dds2))
+
+  # Set up the layout with 1 row and 2 columns
+  par(mfrow=c(1,3))
+
+  # Plot the first plot with subtitle
+  plotCounts(dds_TRU, gene_index, intgroup="Condition", main="truncata",
+             ylim=common_y_lim, transform = transformbool)
+
+  # Plot the second plot with subtitle
+  plotCounts(dds_EXC, gene_index, intgroup="Condition", main="excelsior",
+             ylim=common_y_lim, transform = transformbool)
+
+  # Add gene index and name as subtitle
+  mtext(paste0(gene_index, ":", gene_id), at=0.1, line=0.8, font=2, cex=0.8)
+  
+  if (transformbool == TRUE){
+    mtext(paste0("y is log10 scaled"), at=-2, line=0.8, font=2, cex=0.8)
+  }
+  
+    # Perform two-way ANOVA
+  anova_summary <- perform_twoway_anova(gene_index, dds_TRU, dds_EXC)
+  
+  grid.text(paste(capture.output(summary(anova_summary)), collapse="\n"), x=0.66, y=0.5, just="left", gp=gpar(cex=0.8))
+  
+  # Reset the layout
+  par(mfrow=c(1,1))
+  
+  # Return the summary for potential further processing
+  return(anova_summary)
+}
+
+get_conditions_species <- function(dds_TRU, dds_EXC) {
+  # Extract unique conditions from dds_TRU and dds_EXC
+  conditions_TRU <- dds_TRU$Condition
+  conditions_EXC <- dds_EXC$Condition
+  
+  # Extract unique species from dds_TRU and dds_EXC
+  species_TRU <- dds_TRU$Species
+  species_EXC <- dds_EXC$Species
+  
+  # Combine unique conditions and species from both dds objects
+  all_conditions <- c(conditions_TRU, conditions_EXC)
+  all_species <- c(species_TRU, species_EXC)
+  
+  return(list(Conditions = all_conditions, Species = all_species))
+}
+
+# Example usage:
+conditions_species <- get_conditions_species(dds_TRU, dds_EXC)
+conditions <- conditions_species$Conditions
+species <- conditions_species$Species
+
+# Print the unique conditions and species
+print(conditions)
+print(species)
+
+perform_twoway_anova <- function(gene_index, dds_TRU_row, dds_EXC_row) {
+  # Get gene counts for the given gene index from both dds objects
+  conditions_species <- get_conditions_species(dds_TRU, dds_EXC) #merge gene count rows
+  conditions_list <- conditions_species$Conditions # get and combine factor lists
+  species_list <- conditions_species$Species
+  
+  gene_counts_TRU <- counts(dds_TRU)[gene_index, ]
+  gene_counts_EXC <- counts(dds_EXC)[gene_index, ]
+
+  # Combine gene counts from both conditions into a single data frame
+  gene_counts <- data.frame(
+    Counts = c(gene_counts_TRU, gene_counts_EXC),
+    Condition = conditions_list,
+    Species = species_list
+  ) # matrix of data for ANOVA
+
+  # Perform two-way ANOVA
+  anova_result <- lm(Counts ~ Condition + Species + Condition:Species, data = gene_counts) 
+
+  gene_id <- index2id(gene_index)
+  anova_result$gene_index <- gene_index
+  anova_result$gene_id <- gene_id
+  
+  return(anova_result)
+}
+  
+  
+}
+```
+
+```{r}
+#Load data
+geneID2GO <- readMappings(file = "/Users/daviddornig/Documents/botany_project/data/nblab360_annotation_topGO.csv", IDsep = ";")
+GO2geneID <- inverseList(geneID2GO)
+geneNames <- names(geneID2GO)
+deGenes_TRU_DESeq2 <- read.csv("/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/TRU/DESeq2_DEgenes_TRU_Root.csv", row.names = 1)
+```
+
+```{r}
+
+analyze_DE_genes_GO_Terms <- function(deGenes) {
+  # Assuming you have other necessary objects and functions defined
+  
+  name_list = c("GO.ID","Term","Annotated","Significant","Expected","weight01_pval", "branch")
+  table = as.factor(geneNames) %in% deGenes$Gene_ID
+  int_table = as.integer(table)
+  int_fac_table = factor(int_table)
+  fac_table = rename(table = int_fac_table, geneNames = geneNames)
+
+  GOdata_BP = new("topGOdata", ontology = "BP", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  GOdata_MF = new("topGOdata", ontology = "MF", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  GOdata_CC = new("topGOdata", ontology = "CC", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  resultWeight01_BP = runTest(GOdata_BP, statistic = "fisher")
+  resultWeight01_MF = runTest(GOdata_MF, statistic = "fisher")
+  resultWeight01_CC = runTest(GOdata_CC, statistic = "fisher")
+
+  allRes_BP1 = GenTable(GOdata_BP, weight01_pval=resultWeight01_BP, orderBy = "weight01", ranksOf = "weight01",topNodes = 4888)
+  allRes_MF1 = GenTable(GOdata_MF, weight01_pval=resultWeight01_MF, orderBy = "weight01", ranksOf = "weight01",topNodes = 2436)
+  allRes_CC1 = GenTable(GOdata_CC, weight01_pval=resultWeight01_CC, orderBy = "weight01", ranksOf = "weight01",topNodes = 929)
+ return(list(list(GOdata_BP, resultWeight01_BP), list(GOdata_MF, resultWeight01_MF), list(GOdata_CC, resultWeight01_CC), list(allRes_BP1, allRes_MF1, allRes_CC1)))
+}
+``` 
+
+```{r}
+structure_DE_genes_GO_data <- function(GOdata_BP, GOdata_MF, GOdata_CC, allRes_BP1, allRes_MF1, allRes_CC1, FDR=0.05){
+  # Structure Dataframes:
+  allRes_BP2 = cbind(allRes_BP1,"BP")
+  allRes_MF2 = cbind(allRes_MF1,"MF")
+  allRes_CC2 = cbind(allRes_CC1,"CC")
+  
+  allRes_BP = change_names(data = allRes_BP2, name_list = name_list)
+  allRes_MF = change_names(data = allRes_MF2, name_list = name_list)
+  allRes_CC = change_names(data = allRes_CC2, name_list = name_list)
+  
+  allRes1 = rbind(allRes_BP, allRes_MF)
+  allRes = rbind(allRes1, allRes_CC)
+
+  allGO = c(genesInTerm(GOdata_BP), genesInTerm(GOdata_MF), genesInTerm(GOdata_CC))
+
+  # Create final table
+  SAM_ANOTATION = lapply(allGO, function(x) x[x %in% deGenes$Gene_ID])
+  enriched_go_with_my_genes = lapply(SAM_ANOTATION[allRes[, 1]], paste0, collapse = ", ")
+  enriched_go_with_my_genes.list = attach_enriched_go_genes(enriched_go_with_my_genes)
+  go_dataframe = data.frame("Category" = allRes$branch, "ID" = allRes$GO.ID, "Term" = allRes$Term, "Genes" = as.vector(enriched_go_with_my_genes.list), "adj_pval" = as.numeric(sub(",", ".", allRes$weight01_pval, fixed = TRUE)))
+
+  DE_genes = deGenes
+  EC_genelist = data.frame("ID" = DE_genes$Gene_ID, "logFC" = DE_genes$logFC, "logCPM" = DE_genes$logCPM, "P.Value" = DE_genes$PValue)
+  circ = circle_dat(go_dataframe, EC_genelist)
+  circ_significant <- circ[circ$adj_pval <= FDR,]
+  reduced_circ <- reduce_overlap(circ_significant, overlap = 0.6)
+  
+  # Return the final tables and plot
+  return(list(go_dataframe = go_dataframe, reduced_circ, EC_genelist,  circ, circ_significant))
+}  
+  
+plot_all_GO_data <- function(reduced_circ, 
+                             Method, species, contrast, background, 
+                             savepath, 
+                             CPM, FDR, logFC){
+  contrast = "DroughtvsControl"
+  
+  plot_GO_BP <- GOBar(subset(reduced_circ, category == 'BP'), contrast = contrast)
+  plot_GO_MF <- GOBar(subset(reduced_circ, category == 'MF'), contrast = contrast)
+  plot_GO_CC <- GOBar(subset(reduced_circ, category == 'CC'), contrast = contrast)
+  # Save the plot to a PDF file
+  setwd(savepath)
+  ggsave(paste0(Method,"_", "Barplot_TopGOBP_LogFC_Zscore.", species, "_", contrast,"_", background, "_at","CPM", CPM, "_FDR", FDR,"_FC", logFC, ".pdf"), plot_GO_BP, width = 12, height = 6)
+  ggsave(paste0(Method,"_", "Barplot_TopGOMF_LogFC_Zscore.", species, "_", contrast,"_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, ".pdf"), plot_GO_MF, width = 12, height = 6)
+  ggsave(paste0(Method,"_", "Barplot_TopGOCC_LogFC_Zscore.", species, "_", contrast,"_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, ".pdf"), plot_GO_CC, width = 12, height = 6)
+
+  # Return the final tables and plot
+  return(list(plot_GO_BP, plot_GO_MF, plot_GO_CC))
+}
+
+create_GO_network_graphs <- function(GO_data_BP, resultWeight_BP, GO_data_MF, resultWeight_MF,
+                                     GO_data_CC, resultWeight_CC, 
+                                     Method, species, contrast, background, 
+                                     Nodes = 10, 
+                                     savepath,
+                                     CPM, FDR, logFC){
+  setwd(savepath)
+  printGraph(GOdata_BP, resultWeight_BP, firstSigNodes = 10, fn.prefix = paste0(Method,"_","GO_Network_BP", "_", species, "_",
+                                                                                contrast, "_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, "_N", Nodes), useInfo = "all", pdfSW = TRUE)
+  
+  printGraph(GOdata_MF, resultWeight_MF, firstSigNodes = 10, fn.prefix = paste0(Method,"_","GO_Network_MF", "_", species, "_",
+                                                                                contrast, "_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, "_N", Nodes), useInfo = "all", pdfSW = TRUE)
+  
+  printGraph(GOdata_CC, resultWeight_CC, firstSigNodes = 10, fn.prefix = paste0(Method,"_","GO_Network_CC", "_", species, "_",
+                                                                                contrast, "_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, "_N", Nodes), useInfo = "all", pdfSW = TRUE)
+  
+}
+```
+
+
+
+
+```{r}
+output1_TRU_DESeq2 = analyze_DE_genes_GO_Terms(deGenes_TRU_DESeq2)
+
+output2_TRU_DESeq2 = structure_DE_genes_GO_data(output1_TRU_DESeq2[[1]][[1]], output1_TRU_DESeq2[[2]][[1]], output1_TRU_DESeq2[[3]][[1]],
+                                               output1_TRU_DESeq2[[4]][[1]], output1_TRU_DESeq2[[4]][[2]], output1_TRU_DESeq2[[4]][[3]],
+                                               FDR = 0.05)
+
+
+go_dataframe_TRU_DESeq2 <- output2_TRU_DESeq2[[1]]
+
+Method = "DESeq2"
+species = "TR"
+contrast = "DvC"
+background = "92_outlier"
+savepath <- "/Users/daviddornig/Documents/botany_project/Images/DGE/DESeq2"
+go_plots_TRU_DESeq2 <- plot_all_GO_data(output2_TRU_DESeq2[[2]], Method, species, contrast, background, savepath, "MEAN1.8", 0.05, 1.5)
+
+create_GO_network_graphs(output1_TRU_DESeq2[[1]][[1]], output1_TRU_DESeq2[[1]][[2]], output1_TRU_DESeq2[[2]][[1]],
+                         output1_TRU_DESeq2[[2]][[2]], output1_TRU_DESeq2[[3]][[1]], output1_TRU_DESeq2[[3]][[2]],
+                         Method, species, contrast, background, Nodes=5, savepath, "MEAN1.98", 0.05, 1.5)
+
+```
+# GO TERM barplot TRUNCATA:
+```{r}
+go_plots_TRU_DESeq2
+```
+
+```{r}
+df = go_dataframe_TRU_DESeq2
+water_deprivation_row <- df[grepl("water deprivation", df$Term, ignore.case = TRUE), ]
+
+
+df2 <-  output2_TRU_DESeq2[[2]]
+df2
+
+zscore <- df2[grepl("water deprivation", df2$term, ignore.case = TRUE), ]
+zscore
+
+# Print the resulting row
+print(water_deprivation_row)
+```
+```{r}
+# Extract gene names under the $Genes column
+gene_names <- unlist(strsplit(water_deprivation_row$Genes, ", "))
+# Call id2index function to get indices
+gene_indices <- sapply(gene_names, id2index)
+gene_indices
+```
+
+
+```{r}
+dds_TRU <- DESeqDataSetFromMatrix(countData = count_df_T_outr[-1], colData = samples_T_outr, design = ~Condition)
+dds_TRU <- DESeq(dds_TRU)
+```
+
+## GO analysis: Response to water deprivation (Singnificant for 2679, 4441, 6415, 36966, 39964)
+```{r, fig.width=13, fig.height=5}
+
+# Loop through gene_indices and store the output of each iteration
+for (index in gene_indices) {
+  plot_gene_expression(index, dds_TRU, dds_EXC, log10scale = TRUE)
+}
+```
+```{r, fig.width=13, fig.height=5}
+
+# Loop through gene_indices and store the output of each iteration
+for (index in gene_indices) {
+  plot_gene_expression(index, dds_TRU, dds_EXC, log10scale = FALSE)
+}
+```
+
+# Retrieve Counts from gene
+```{r}
+gene_index = 4441
+gene_values_dds1 <- counts(dds_TRU)[gene_index, ]
+gene_values_dds2 <- counts(dds_EXC)[gene_index, ]
+log(gene_values_dds1)
+sizefactors <- sizeFactors(dds_TRU)
+sizefactors
+norm <- gene_values_dds1/sizefactors
+norm
+```
+
+# Retrieve ANOVA Summary from gene
+```{r}
+summary(output_list[[1]]$two_way_ANOVA_summary)
+```
+
+## Inspecting Zscore Error:
+```{r}
+deGenes = deGenes_TRU_DESeq2
+
+  name_list = c("GO.ID","Term","Annotated","Significant","Expected","weight01_pval", "branch")
+  table = as.factor(geneNames) %in% deGenes$Gene_ID
+  int_table = as.integer(table)
+  int_fac_table = factor(int_table)
+  fac_table = rename(table = int_fac_table, geneNames = geneNames)
+
+  GOdata_BP = new("topGOdata", ontology = "BP", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  GOdata_MF = new("topGOdata", ontology = "MF", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  GOdata_CC = new("topGOdata", ontology = "CC", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  resultWeight01_BP = runTest(GOdata_BP, statistic = "fisher")
+  resultWeight01_MF = runTest(GOdata_MF, statistic = "fisher")
+  resultWeight01_CC = runTest(GOdata_CC, statistic = "fisher")
+
+  allRes_BP1 = GenTable(GOdata_BP, weight01_pval=resultWeight01_BP, orderBy = "weight01", ranksOf = "weight01",topNodes = 4888)
+  allRes_MF1 = GenTable(GOdata_MF, weight01_pval=resultWeight01_MF, orderBy = "weight01", ranksOf = "weight01",topNodes = 2436)
+  allRes_CC1 = GenTable(GOdata_CC, weight01_pval=resultWeight01_CC, orderBy = "weight01", ranksOf = "weight01",topNodes = 929)
+  
+  # Structure Dataframes:
+  allRes_BP2 = cbind(allRes_BP1,"BP")
+  allRes_MF2 = cbind(allRes_MF1,"MF")
+  allRes_CC2 = cbind(allRes_CC1,"CC")
+  
+  allRes_BP = change_names(data = allRes_BP2, name_list = name_list)
+  allRes_MF = change_names(data = allRes_MF2, name_list = name_list)
+  allRes_CC = change_names(data = allRes_CC2, name_list = name_list)
+  
+  allRes1 = rbind(allRes_BP, allRes_MF)
+  allRes = rbind(allRes1, allRes_CC)
+  print(AllRes)
+  allGO = c(genesInTerm(GOdata_BP), genesInTerm(GOdata_MF), genesInTerm(GOdata_CC))
+
+  # Create final table
+  SAM_ANOTATION = lapply(allGO, function(x) x[x %in% deGenes$Gene_ID])
+  enriched_go_with_my_genes = lapply(SAM_ANOTATION[allRes[, 1]], paste0, collapse = ", ")
+  enriched_go_with_my_genes.list = attach_enriched_go_genes(enriched_go_with_my_genes)
+  go_dataframe = data.frame("Category" = allRes$branch, "ID" = allRes$GO.ID, "Term" = allRes$Term, "Genes" = as.vector(enriched_go_with_my_genes.list), "adj_pval" = as.numeric(sub(",", ".", allRes$weight01_pval, fixed = TRUE)))
+
+  DE_genes = deGenes
+  EC_genelist = data.frame("ID" = DE_genes$Gene_ID, "logFC" = DE_genes$logFC, "logCPM" = DE_genes$logCPM, "P.Value" = DE_genes$PValue)
+  circ = circle_dat(go_dataframe, EC_genelist)
+  circ_significant <- circ[circ$adj_pval <= 0.05,]
+  reduced_circ <- reduce_overlap(circ_significant, overlap = 0.6)
+
+  plot_GO <- GOBar(subset(reduced_circ, category == 'BP'), contrast = contrast)
+
+  # Save the plot to a PDF file
+  ggsave(paste0("Barplot_TopGO_LogFC_Zscore.", species, "_", contrast, "_at", background, ".pdf"), plot_GO, width = 12, height = 6)
+
+  # Return the final tables and plot
+  return(list(go_dataframe = go_dataframe, plot_GO = plot_GO, GOdata_BP, resultWeight01_BP, GOdata_MF, resultWeight01_MF, GOdata_CC, resultWeight01.CC))
+```
+
+
+
+
+
+
+
+

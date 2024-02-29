@@ -1,0 +1,1698 @@
+---
+title: "EdgeR - Differential Expression Analysis of N.truncata and N. excelsior roots under drought stress"
+output:
+  html_document:
+    df_print: paged
+---
+# Install & Load libraries
+```{r}
+#Load libraries
+pacman::p_load("edgeR", "ggplot2", "ggpubr", "tidyverse", "gridExtra", "ggfortify", "pheatmap", "VennDiagram", "plotly", "ggrepel", "gprofiler2", "topGO", "dplyr", "xlsx", "tibble", "readxl", "statmod")
+```
+
+```{r}
+library(DESeq2)
+library(plotly)
+```
+# Data Preprocessing:
+```{r}
+#Load Data of STAR alignment and featureCount
+data <- read.table("/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/TRU_EXC_Roots_fragmentcount.txt", header = TRUE)
+colnames(data) <- gsub("Aligned.sortedByCoord.out.bam", "", colnames(data))
+col_names <- colnames(data)
+colnames(data) <- gsub("^X", "", col_names)
+samplelist <- colnames(data)[-(1:6)]
+print(samplelist)
+```
+## dataframe of STAR aligned and featureCount data:
+```{r}
+data
+```
+
+
+
+## GO Annotation of genes Testing:
+```{r}
+#Load Annotation data
+
+# Install and load the required packages
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    BiocManager::install("Biostrings")
+library(Biostrings)
+# Define the path to your FASTA file
+fasta_file <- "./genome_ref/NbLab360.v103.gff3.CDS.fasta.gz"
+
+# Read the FASTA file
+fasta_sequences <- readDNAStringSet(fasta_file, use.names=TRUE)
+
+# Convert the DNAStringSet object to a data frame
+fasta_df <- data.frame(
+  Sequence_ID = names(fasta_sequences),
+  Sequence = as.character(fasta_sequences),
+  stringsAsFactors = FALSE
+)
+
+# Print the first few rows of the data frame
+print(head(fasta_df))
+
+# Write the data frame to a tab-delimited text file
+write.table(fasta_df, "fasta_table.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+```
+```{r}
+library(stringr)
+
+# Filter dataframe based on gene IDs and gene product IDs
+gene_id_pattern <- "NbL\\d+g\\d+\\.\\d+"  # Gene ID pattern
+gene_product_id_pattern <- "LOC\\d+"       # Gene product ID pattern
+
+# Extract gene ID and gene product ID from Sequence_ID column
+fasta_df$Gene_ID <- str_extract(fasta_df$Sequence_ID, gene_id_pattern)
+fasta_df$Gene_Product_ID <- str_extract(fasta_df$Sequence_ID, gene_product_id_pattern)
+row.names(fasta_df) <- NULL
+fasta_df <- fasta_df[, c("Gene_ID", "Gene_Product_ID", setdiff(names(fasta_df), c("Gene_ID", "Gene_Product_ID")))]
+fasta_df <- fasta_df[, -which(names(fasta_df) == "Sequence_ID")]
+
+# Print the first few rows of the updated dataframe
+print(head(fasta_df))
+```
+```{r}
+# Load the AnnotationHub package
+# Install and load the remotes package (if not already installed)
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  install.packages("remotes")
+}
+library(remotes)
+
+# Install BiocFileCache from GitHub
+remotes::install_github("Bioconductor/BiocFileCache")
+
+# Load the BiocFileCache package
+library(BiocFileCache)
+library(dbplyr)
+
+if (!requireNamespace("AnnotationHub", quietly = TRUE))
+    BiocManager::install("AnnotationHub")
+library(AnnotationHub)
+
+# Get the AnnotationHub object
+ah <- AnnotationHub()
+
+# Query for Gene Ontology annotations
+go_annotations <- query(ah, c("Gene Ontology"))
+
+# Filter the results based on species of interest (e.g., tomato, potato, N. attenuata, N. tabacum)
+species_of_interest <- c("Solanum lycopersicum", "Solanum tuberosum", "Nicotiana attenuata", "Nicotiana tabacum")
+filtered_go_annotations <- go_annotations[go_annotations$species %in% species_of_interest]
+
+# Print the filtered Gene Ontology annotations
+print(filtered_go_annotations)
+
+
+```
+
+## Prepare metadata as meta_df
+```{r}
+metadata <- c(
+  "61;excelsior;drought;roots",
+  "62;excelsior;drought;roots",
+  "63;excelsior;control;roots",
+  "64;excelsior;drought;roots",
+  "65;excelsior;control;roots",
+  "66;excelsior;control;roots",
+  "67;excelsior;control;roots",
+  "68;excelsior;drought;roots",
+  "69;excelsior;drought;roots",
+  "70;excelsior;drought;roots",
+  "71;excelsior;control;roots",
+  "72;excelsior;control;roots",
+  "85;truncata;control;roots",
+  "86;truncata;drought;roots",
+  "87;truncata;drought;roots",
+  "88;truncata;control;roots",
+  "89;truncata;drought;roots",
+  "90;truncata;control;roots",
+  "91;truncata;drought;roots",
+  "92;truncata;control;roots",
+  "93;truncata;control;roots",
+  "94;truncata;drought;roots",
+  "95;truncata;drought;roots",
+  "96;truncata;control;roots"
+)
+```
+
+
+```{r}
+
+# Define a function to generate abbreviations like ECR85 from excelsior, control, roots, 85
+generate_abbreviation <- function(line) {
+  # Split the line into components
+  components <- strsplit(line, ";")[[1]]
+  
+  # Extract metadata components
+  species <- components[2]
+  condition <- components[3]
+  location <- components[4]
+  number <- components[1]
+  
+  # Combine components to generate abbreviation
+  abbreviation <- paste0(toupper(substr(species, 1, 1)), toupper(substr(condition, 1, 1)), toupper(substr(location, 1, 1)), number)
+  
+  return(abbreviation)
+}
+
+abbreviations <- sapply(metadata, generate_abbreviation)
+
+
+# Split the metadata into ID, Species, and Condition for df conversion
+metadata_split <- strsplit(metadata, ";")
+split_abbreviations <- strsplit(abbreviations, ";")
+
+
+ID = sapply(metadata_split, `[`, 1)
+Species = sapply(metadata_split, `[`, 2)
+Condition = sapply(metadata_split, `[`, 3)
+Location = sapply(metadata_split, `[`, 4)
+
+meta_df <- data.frame(
+  ID = sapply(metadata_split, `[`, 1),
+  Species = sapply(metadata_split, `[`, 2),
+  Condition = sapply(metadata_split, `[`, 3),
+  Location = sapply(metadata_split, `[`, 4),
+  Abbrevations = sapply(split_abbreviations, "[", 1)
+)
+rownames(meta_df) <- NULL
+
+# filter out important data:
+
+# sample data:
+samples <- data.frame(row.names=meta_df$Abbrevations, Condition=meta_df$Condition, Species=meta_df$Species)
+# sample gene count data:
+count_df <- data[, -(2:6)]
+
+# Rename the sample columns of 'count_df' using the sample names
+colnames(count_df)[-(1)] <- meta_df$Abbrevations
+```
+## meta_df - dataframe of the metadata of the samples:
+```{r}
+meta_df
+```
+## count_df - dataframe of the samples and their counts:
+```{r}
+count_df
+```
+## Separate dataframe of samples under Control condition:
+```{r}
+# Identify columns containing "D"
+all_drought_samples <- grep("D", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_C <- count_df[, !colnames(count_df) %in% all_drought_samples]
+
+meta_df_C <- meta_df[!meta_df$Abbrevations %in% all_drought_samples, ]
+
+samples_C <- data.frame(row.names=meta_df_C$Abbrevations, Condition=meta_df_C$Condition, Species=meta_df_C$Species)
+print(meta_df_C)
+print(samples_C)
+```
+## Separate dataframe of samples under Drought condition:
+
+```{r}
+# Identify columns containing "C"
+all_control_samples <- grep("C", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_D <- count_df[, !colnames(count_df) %in% all_control_samples]
+
+meta_df_D <- meta_df[!meta_df$Abbrevations %in% all_control_samples, ]
+
+samples_D <- data.frame(row.names=meta_df_D$Abbrevations, Condition=meta_df_D$Condition, Species=meta_df_D$Species)
+print(meta_df_D)
+print(samples_D)
+```
+## Get only N.excelsior samples:
+```{r}
+# Identify columns containing "E"
+all_control_samples <- grep("T", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_E <- count_df[, !colnames(count_df) %in% all_control_samples]
+
+meta_df_E <- meta_df[!meta_df$Abbrevations %in% all_control_samples, ]
+
+samples_E <- data.frame(row.names=meta_df_E$Abbrevations, Condition=meta_df_E$Condition, Species=meta_df_E$Species)
+print(meta_df_E)
+print(samples_E)
+```
+
+## Get only N.truncata samples:
+```{r}
+# Identify columns containing "E"
+all_control_samples <- grep("E", names(count_df), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_T <- count_df[, !colnames(count_df) %in% all_control_samples]
+
+meta_df_T <- meta_df[!meta_df$Abbrevations %in% all_control_samples, ]
+
+samples_T <- data.frame(row.names=meta_df_T$Abbrevations, Condition=meta_df_T$Condition, Species=meta_df_T$Species)
+print(meta_df_T)
+print(samples_T)
+```
+
+
+## DataFrame Of a samples outlier removed (outr):
+
+```{r}
+# After PCA inspection, remove samples:
+removesamples <- c("TCR92")
+
+# Remove the specified columns from count_df
+count_df_outr <- count_df[, !colnames(count_df) %in% removesamples]
+
+meta_df_outr <- meta_df[!meta_df$Abbrevations %in% removesamples, ]
+
+samples_outr <- data.frame(row.names=meta_df_outr$Abbrevations, Condition=meta_df_outr$Condition, Species=meta_df_outr$Species)
+print(meta_df_outr)
+print(samples_outr)
+```
+# Dataframe of N.excelsior samples without outliers:
+```{r}
+# Identify columns containing "T"
+all_control_samples <- grep("T", names(count_df_outr), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_E_outr <- count_df_outr[, !colnames(count_df_outr) %in% all_control_samples]
+
+meta_df_E_outr <- meta_df_outr[!meta_df_outr$Abbrevations %in% all_control_samples, ]
+
+samples_E_outr <- data.frame(row.names=meta_df_E_outr$Abbrevations, Condition=meta_df_E_outr$Condition, Species=meta_df_E_outr$Species)
+print(meta_df_E_outr)
+print(samples_E_outr)
+```
+# Dataframe of N.truncata samples without outliers:
+```{r}
+# Identify columns containing "E"
+all_control_samples <- grep("E", names(count_df_outr), value = TRUE)
+
+# Remove the specified columns from count_df
+count_df_T_outr <- count_df_outr[, !colnames(count_df_outr) %in% all_control_samples]
+
+meta_df_T_outr <- meta_df_outr[!meta_df_outr$Abbrevations %in% all_control_samples, ]
+
+samples_T_outr <- data.frame(row.names=meta_df_T_outr$Abbrevations, Condition=meta_df_T_outr$Condition, Species=meta_df_T_outr$Species)
+print(meta_df_T_outr)
+print(samples_T_outr)
+```
+
+# PCA Analysis
+
+```{r}
+library(ggfortify)
+library(cluster)
+
+# Define Functions: 
+# PCA plotting with DeSeq2
+perform_pca_plot <- function(count_df, samples, condition_col, design_formula) {
+
+  # Create DESeqDataSet
+  dds <- DESeqDataSetFromMatrix(countData = count_df[-1], colData = samples, design = design_formula)
+  
+  # Perform rlog transformation
+  rld <- rlog(dds)
+  
+  # Define colors based on the condition
+  if (condition_col == "Species") {
+    colors <- c("darkgoldenrod2", "darkseagreen4")
+  } else {
+  colors <- c("chartreuse4", "coral")
+  }
+  
+  # Perform PCA
+  pca <- plotPCA(rld, intgroup = condition_col)
+  
+  pca_modified <- pca +
+  scale_color_manual(values = colors) 
+  
+  # Plot PCA with custom color scale
+  p <- ggplotly(pca_modified) 
+  
+  # Add labels to PCA plot
+  p_labelled <- pca_modified + geom_text(aes(label = name), size = 3, nudge_x = 4)
+  
+
+  # Convert to plotly object
+  p_labelled <- ggplotly(p_labelled)
+  
+
+  # Return plotly objects
+  return(list(rld, p, p_labelled))
+}
+
+# Probability ellipse clustering:
+perform_pam_clustering <- function(rld, k = 4) {
+  # Transpose rld
+  rld_transposed <- t(assay(rld))
+  
+  # Perform PCA
+  pca <- prcomp(rld_transposed)
+  
+  # Perform PAM clustering on the principal components
+  pam_clusters <- pam(pca$x, k = k)
+  
+  # Visualize clustered data using autoplot
+  autoplot(pam_clusters, data = pca$x, label = TRUE, frame = TRUE, frame.type = 'norm')
+}
+
+plot_pca_loadings <- function(rld, samples, n_top_loadings, direction1, direction2) {
+    # Perform PCA
+  pca <- prcomp(t(assay(rld)))
+  
+  # Extract gene IDs
+  geneid <- as.list(count_df$Geneid)
+  
+  # Extract loadings
+  loadings <- pca$rotation
+  
+  # Create a dataframe for loadings
+  loadings_df <- data.frame(x = loadings[,1], y = loadings[,2])
+  
+  # Calculate the magnitude of each vector
+  loadings_df$magnitude <- sqrt(loadings_df$x^2 + loadings_df$y^2)
+  
+  # Select the top n_top_loadings highest magnitude loadings
+  top_loadings <- head(loadings_df[order(-loadings_df$magnitude), ], n_top_loadings)
+  
+  # Get the row indices from top_loadings
+  row_indices <- as.numeric(rownames(top_loadings))
+  
+  # Subset loadings using the row indices
+  top_loadings <- loadings_df[row_indices, , drop = FALSE]
+  min_magnitude <- min(filtered_loadings$magnitude)
+    
+  # Calculate angles of loadings relative to the reference directions
+  angles1 <- sapply(1:nrow(top_loadings), function(i) {
+    acos(sum(direction1 * c(top_loadings[i, "x"], top_loadings[i, "y"])) /
+           (sqrt(sum(direction1^2)) * sqrt(sum(c(top_loadings[i, "x"], top_loadings[i, "y"])^2))))
+  })
+  angles2 <- sapply(1:nrow(top_loadings), function(i) {
+    acos(sum(direction2 * c(top_loadings[i, "x"], top_loadings[i, "y"])) /
+           (sqrt(sum(direction2^2)) * sqrt(sum(c(top_loadings[i, "x"], top_loadings[i, "y"])^2))))
+  })
+  
+  # Filter loadings based on angles with both directions
+  filtered_indices <- which(angles1 <= 30 * pi / 180 | angles2 <= 30 * pi / 180)
+  filtered_loadings <- top_loadings[filtered_indices, , drop = FALSE]
+  
+
+  
+  # Get the row indices from filtered_loadings
+  row_indices <- as.numeric(rownames(filtered_loadings))
+  
+  # Subset geneid using the row indices
+  geneid_labels <- geneid[row_indices]
+  
+  # Visualize PCA
+  pca_plot <- autoplot(pca, data = samples, label = TRUE, colour = 'Condition')
+
+  # Convert ggplot to plotly object
+    pca_plotly <- ggplotly(pca_plot)
+    
+    # Add arrows using add_segments
+    pca_plotly <- pca_plotly %>%
+        add_segments(data = filtered_loadings, x = ~0, y = ~0, xend = ~2*x, yend = ~2*y, 
+                     line = list(color = "blue", width = 1)) %>%
+        add_segments(data = data.frame(direction1 = direction1, direction2 = direction2), 
+                     x = ~0, y = ~0, xend = ~direction1[1]/20, yend = ~direction1[2]/20, 
+                     line = list(color = "red", width = 1)) %>%
+        add_segments(data = data.frame(direction1 = direction1, direction2 = direction2), 
+                     x = ~0, y = ~0, xend = ~direction2[1]/20, yend = ~direction2[2]/20, 
+                     line = list(color = "red", width = 1, dash = "dot"))
+    pca_plotly <- pca_plotly %>%
+        add_annotations(x = ~2*filtered_loadings$x, y = ~2*filtered_loadings$y,
+                        text = geneid_labels, showarrow = FALSE, 
+                        font = list(color = "blue"))
+    
+    # Add top loadings as arrows to the plot
+  labelled_pca_plot <- pca_plot + 
+    geom_segment(data = filtered_loadings, aes(x = 0, y = 0, xend = 2*x, yend = 2*y),
+                 arrow = arrow(type = "closed", length = unit(0.01, "npc")), color = "blue") +
+    geom_text(data = filtered_loadings, aes(x = 2*x, y = 2*y, label = geneid_labels),
+              hjust = 0, vjust = 0) +
+    geom_segment(aes(x = 0, y = 0, xend = direction1[1]/20, yend = direction1[2]/20),
+              arrow = arrow(type = "closed", length = unit(0.2, "cm")), color = "red") +
+    geom_segment(aes(x = 0, y = 0, xend = direction2[1]/20, yend = direction2[2]/20),
+              arrow = arrow(type = "closed", length = unit(0.2, "cm")), color = "red")
+    
+  return(list(labelled_pca_plot, pca_plotly, min_magnitude))
+}
+
+calculate_PCA <- function(data, pcs_to_use = 1:3) {
+  # Perform row-wise variance calculation
+  row_variances <- apply(data, 1, var)
+  
+  # Select top genes by variance
+  top_genes <- order(row_variances, decreasing = TRUE)[1:min(500, length(row_variances))]
+  
+  # Perform PCA on the selected genes
+  pca_result <- prcomp(t(data[top_genes, ]))
+  # Extract PCs
+  pcs <- pca_result$x[, pcs_to_use]
+  
+  # Create data frame with PCs
+  pca_data <- data.frame(matrix(pcs, ncol = length(pcs_to_use), 
+                                dimnames = list(NULL, paste0("PC", pcs_to_use))))
+  
+  return(list(pca_result, pca_data))
+}
+
+
+perform_3d_pca_plot <- function(rld, sample_data, pcs_to_use = 1:3, colors = c("blue", "red")) {
+
+  # Perform PCA
+  pca_output <- calculate_PCA(assay(rld), pcs_to_use = pcs_to_use)
+  pca_data <- pca_output[[2]]
+  # Create plotly plot
+  p <- plot_ly(data = pca_data, 
+               x = ~PC1, y = ~PC2, z = ~PC3,
+               color = ~sample_data$Condition, colors = colors, 
+               type = "scatter3d", mode = "markers", text = rownames(sample_data)) %>%
+       layout(scene = list(xaxis = list(title = "PC1"),
+                           yaxis = list(title = "PC2"),
+                           zaxis = list(title = "PC3")),
+              title = "Interactive 3D PCA Plot")
+  
+  # add sample names
+  p <- p %>% add_text(type = "scatter3d",
+                     mode = "text",
+                     x = pca_data$PC1,
+                     y = pca_data$PC2,
+                     z = pca_data$PC3,
+                     text = rownames(sample_data),
+                     textfont = list(size = 12, color = "grey"))
+  
+  # Save the plot as an HTML file
+  html_file <- "interactive_3d_pca_plot.html"
+  htmlwidgets::saveWidget(p, html_file, selfcontained = TRUE)
+
+  # Open the HTML file in your default web browser
+  browseURL(html_file)
+}
+
+pca_explained_ratio_plot <- function(pca_output) {
+  explained_variance_ratio <- summary(pca_output[[1]])[["importance"]]['Proportion of Variance',]
+  cumsum <- cumsum(explained_variance_ratio)
+  
+  data <- data.frame(cumsum, seq(1, length(cumsum), 1))
+  colnames(data) <- c('Explained_Variance', 'Components')
+  
+  fig <- plot_ly(data = data, x = ~Components, y = ~Explained_Variance, type = 'scatter', mode = 'lines', fill = 'tozeroy') %>%
+    layout(
+      xaxis = list(title = "# Components", tickvals = seq(1, length(cumsum), 1)),
+      yaxis = list(title = "Explained Variance")
+    )
+  
+  return(fig)
+}
+
+```
+
+## PCA of all samples:
+
+```{r}
+# plot PCA of all samples
+pca_all <- perform_pca_plot(count_df, samples, "Condition", ~ Condition)
+print(pca_all[[3]])
+```
+## PCA of only Control samples:
+```{r}
+# PCA of only Control samples
+pca_C <- perform_pca_plot(count_df_C, samples_C, "Species", ~ Species)
+print(pca_C[[3]])
+```
+
+## PCA of only Drought samples:
+```{r}
+# PCA of only Control samples
+pca_D <- perform_pca_plot(count_df_D, samples_D, "Species", ~ Species)
+print(pca_D[[3]])
+```
+## PCA of only N.excelsior samples:
+```{r}
+# PCA of only N.excelsior samples
+pca_E <- perform_pca_plot(count_df_E, samples_E, "Condition", ~ Condition)
+print(pca_E[[3]])
+```
+
+## PCA of only N.truncata samples:
+```{r}
+# PCA of only Control samples
+pca_C <- perform_pca_plot(count_df_T, samples_T, "Condition", ~ Condition)
+print(pca_C[[3]])
+```
+## Outlier Removal of sample TCR92?? inspection of => 3D PCA and => zero counts
+```{r}
+# Perform 3D PCA
+deseq_TRU = DESeqDataSetFromMatrix(countData = count_df_T[-1], colData = samples_T, design = ~Condition)
+rld_TRU <- rlog(deseq_TRU)
+perform_3d_pca_plot(rld_TRU, samples_T)
+zero_counts <- colSums(count_df_T == 0)
+zero_counts
+# TCR92 has 7021 zeros, TDR94 has 6544, therefore it may not be the same sample at sequencing
+# 3D plot show a high resemblance of them however, TCR92 will be removed.
+```
+
+
+```{r}
+# PCA of only outlier removed samples
+pca_outlier_removed <- perform_pca_plot(count_df_outr, samples_outr, "Condition", ~ Condition)
+print(pca_outlier_removed[[3]])
+print(perform_pam_clustering(pca_outlier_removed[[1]], k = 4))
+```
+
+## PCA of outlier removed N.excelsior data:
+```{r}
+# PCA of only N.excelsior outlier removed samples
+pca_E_outr <- perform_pca_plot(count_df_E_outr, samples_E_outr, "Condition", ~ Condition)
+print(pca_E_outr[[3]])
+print(perform_pam_clustering(pca_E_outr[[1]], k = 2))
+direction1 <- c(-1, -0.2)  # First reference direction
+direction2 <- c(1, 0.2)  # Second reference direction
+plot_loading_E <- plot_pca_loadings(pca_E_outr[[1]], samples_E_outr,  n_top_loadings = 50, direction1, direction2)
+print(plot_loading_E[[1]])
+print(plot_loading_E[[2]])
+```
+## PCA of outlier removed N.truncata data:
+```{r}
+# PCA of only N.truncata outlier removed samples
+pca_T_outr <- perform_pca_plot(count_df_T_outr, samples_T_outr, "Condition", ~ Condition)
+print(pca_T_outr[[3]])
+print(perform_pam_clustering(pca_T_outr[[1]], k = 2))
+direction1 <- c(-1, -0.2)  # First reference direction
+direction2 <- c(1, 0.2)  # Second reference direction
+plot_loading_T <- plot_pca_loadings(pca_T_outr[[1]], samples_T_outr,  n_top_loadings = 50, direction1, direction2)
+print(plot_loading_T[[1]])
+print(plot_loading_T[[2]])
+```
+
+```{r}
+perform_fanny_clustering <- function(rld, k = 4) {
+  # Transpose rld
+  rld_transposed <- t(assay(rld))
+  
+  # Perform PCA
+  pca <- prcomp(rld_transposed)
+  
+  # Perform convex clustering on the principal components
+  fanny_clusters <- fanny(pca$x, k = k)
+  
+  # Visualize clustered data using autoplot
+  autoplot(fanny_clusters, data = pca$x, label = TRUE, frame = TRUE)
+}
+
+perform_fanny_clustering(pca_outlier_removed[[1]])
+```
+
+# DGE Analysis
+```{r}
+calculate_num_significant_genes <- function(count_matrix, cpm_threshold, FDR = 0.05, lfc_threshold = 1.5) {
+  print(cpm_threshold)
+  gene_cpm_filter_over_6_samples <- rowSums(cpm(count_matrix) > cpm_threshold) >= 6
+  count_matrix_filtered <- count_matrix[gene_cpm_filter_over_6_samples,]
+  size_count_matrix_filtered <- dim(count_matrix_filtered)
+  num_rows <- size_count_matrix_filtered[1]
+  
+  # Normalize data by TMM
+  normalized_data <- calcNormFactors(count_matrix_filtered, method = "TMM", refColumn=NULL, logratioTrim=.3, sumTrim=0.05, doWeighting=TRUE, Acutoff=-1e10)
+  # Design matrix for GLM
+  design_mat <- model.matrix(~ 0 + count_matrix$samples$group)
+  colnames(design.mat) <- levels(count_matrix$samples$group)
+
+  # GLM testing for differential expression
+  d_disp <- estimateDisp(normalized_data, robust = T)
+  d_GLM <- estimateGLMTagwiseDisp(d_disp, design_mat)
+  
+  d_fit <- glmFit(d_GLM, design_mat)
+  lrtdc <- glmLRT(d_fit, contrast = c(-1, 1))  # Compare groups: 1-control and -1-drought
+  
+  # Get the number of differentially expressed genes (at FDR < 0.05 and log2-fold-change > threshold)
+  deGLM <- decideTestsDGE(lrtdc, adjust.method = "BH", p.value = FDR, lfc = lfc_threshold)
+  significant_genes <- rownames(count_matrix_filtered)[as.logical(deGLM)]
+  num_significant_genes <- length(significant_genes)
+  print(num_rows)
+  return(list(num_rows, num_significant_genes))
+}
+
+edgeR_sign_genes_for_treshold <- function(sample_count_df_outr, sample_meta_df_outr, cpm_threshold, FDR = 0.05, lfc_threshold = 1.5) {
+  print(cpm_threshold)
+  
+  d_outr <- DGEList(counts=sample_count_df_outr[, -1],group=sample_meta_df_outr$Condition)
+  # Filter genes with mean CPM > threshold
+  count_matrix = d_outr
+  print(str(cpm(count_matrix)))
+  gene_cpm_filter_over_6_samples <- rowSums(cpm(count_matrix) > cpm_threshold) >= 6
+  count_matrix_filtered <- count_matrix[gene_cpm_filter_over_6_samples ,]
+  size_count_matrix_filtered <- dim(count_matrix_filtered)
+  num_rows <- size_count_matrix_filtered[1]
+  #gene_keep_criteria <- rowSums(cpm(d) > 10) >= 6
+  #d_T_outr_high_cpm_filtered <- d_T_outr[gene_keep_criteria,]
+  
+  # Normalize data by TMM
+  normalized_data <- calcNormFactors(count_matrix_filtered)
+  
+  DE_result <- perform_edgeR_DE_analysis(normalized_data, sample_meta_df_outr, "Condition", lfc_threshold, FDR)
+   
+  # Sort significant_genes by the absolute value of logFC
+  significant_genes <- DE_result[[4]]
+
+  # Insert a column for regulation
+  significant_genes$Regulation <- ifelse(significant_genes$logFC > 0, "Upregulated", "Downregulated")
+
+  # Get the Geneid values corresponding to the indices of significant_genes
+
+  row_indices <- as.numeric(rownames(significant_genes))
+  
+  geneids <- geneid[row_indices]
+
+  # Add the Geneid values as a new column in significant_genes
+  significant_genes$Gene_ID <- as.character(geneids)
+  
+  return(list(DE_result, significant_genes))
+  
+}
+calculate_num_rejections <- function(count_matrix, cpm_threshold) {
+  gene_cpm_filter_over_6_samples <- rowSums(cpm(count_matrix) > cpm_threshold) >= 6
+  count_matrix_filtered <- count_matrix[gene_cpm_filter_over_6_samples,]
+  lib_sizes_before <- count_matrix$samples$lib.size
+  lib_sizes_after <- count_matrix_filtered$samples$lib.size
+  rejections_list <- lib_sizes_before - lib_sizes_after
+  num_rejections <- sum(rejections_list)  # Count differences larger than 0
+  return(num_rejections)
+}
+
+plot_num_rejections_vs_cpm_0to1 <- function(count_matrix, num_steps = 10, FDR = 0.05, lfc_threshold = 1.5) {
+  cpm_values <- seq(0, 1, length.out = num_steps)
+  df <- data.frame(CPM_Threshold = cpm_values, Num_Genes_kept = numeric(length(cpm_values)), Num_rejections = numeric(length(cpm_values)))
+  
+  for (i in 1:length(cpm_values)) {
+    cpm_threshold <- cpm_values[i]
+    gene_cpm_filter_over_6_samples <- rowSums(cpm(count_matrix) > cpm_threshold) >= 6
+    num_rejections <- sum(!gene_cpm_filter_over_6_samples)
+    df[i, "Num_Genes_kept"] <- sum(gene_cpm_filter_over_6_samples) 
+    df[i, "Num_rejections"] <- sum(!gene_cpm_filter_over_6_samples)
+  }
+  
+  rejections_threshold_plot <- ggplot(df, aes(x = CPM_Threshold, y = Num_rejections)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "CPM Threshold", y = "Number of Rejections") +
+    theme_minimal()
+  
+  return(list(df, rejections_threshold_plot))
+}
+
+plot_significant_genes_vs_cpm_0to1 <- function(count_matrix, num_steps = 10, FDR = 0.05, lfc_threshold = 1.5) {
+  cpm_values <- seq(0, 1, length.out = num_steps)
+  df <- data.frame(CPM_Threshold = cpm_values, Significant_Genes = numeric(length(cpm_values)), Num_Genes_kept = numeric(length(cpm_values)))
+  
+  for (i in 1:length(cpm_values)) {
+    cpm_threshold <- cpm_values[i]
+    calculation_output <- calculate_num_significant_genes(count_matrix, cpm_threshold, FDR, lfc_threshold)
+    df[i, "Num_Genes_kept"] <- calculation_output[[1]]  
+    df[i, "Significant_Genes"] <- calculation_output[[2]]
+  }
+  
+  sign_gene_threshold_plot <- ggplot(df, aes(x = CPM_Threshold, y = Significant_Genes)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "CPM Threshold", y = "Number of Significant Genes") +
+    theme_minimal()
+  
+  return(list(df, sign_gene_threshold_plot))
+}
+
+plot_significant_genes_vs_cpm <- function(count_matrix, max_cpm = 10, FDR = 0.05, lfc_threshold = 1.5) {
+  cpm_values <- 0:max_cpm
+  df <- data.frame(CPM_Threshold = cpm_values, Significant_Genes = numeric(length(cpm_values)), Num_Genes_kept = numeric(length(cpm_values)))
+  
+  for (i in 1:length(cpm_values)) {
+    cpm_threshold <- cpm_values[i]
+    calculation_output <- calculate_num_significant_genes(count_matrix, cpm_threshold, FDR, lfc_threshold)
+    df[i, "Num_Genes_kept"] <- calculation_output[[1]]  
+    df[i, "Significant_Genes"] <- calculation_output[[2]]
+  }
+  
+  sign_gene_threshold_plot <- ggplot(df, aes(x = CPM_Threshold, y = Significant_Genes)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "CPM Threshold", y = "Number of Significant Genes") +
+    theme_minimal()
+  
+  return(list(df, sign_gene_threshold_plot))
+  
+perform_edgeR_DE_analysis <- function(normalized_count_matrix, samples, condition_column, logFC_threshold = 1.5, p_value_threshold = 0.05) {
+  # Create condition design matrix
+  condition <- factor(samples[[condition_column]])
+  design <- model.matrix(~0 + condition)
+  colnames(design) <- levels(condition)
+  
+  # Estimate dispersion
+  d_disp <- estimateDisp(normalized_count_matrix, design, robust = TRUE)
+  
+  # Plot BCV
+  plotBCV(d_disp)
+  
+  fit <- glmQLFit(d_disp, design, robust=TRUE)
+  plotQLDisp(fit)
+  
+  # Define contrast
+  con <- makeContrasts(drought - control, levels = design)
+  
+  # Perform significance test with fitted disperion model:
+  qlf <- glmQLFTest(fit, contrast=con)
+  #summary(decideTests(qlf, adjust.method="BH", p.value=0.05))
+  plotMD(qlf)
+  
+  # Filter with FC 1.5 and perform test:
+  tr <- glmTreat(fit, contrast=con, lfc=log2(1.5))
+  #summary(decideTests(tr, adjust.method="BH", p.value=0.05))
+  plotMD(tr)
+  
+  # plot CPM over all samples for top genes
+  top <- rownames(topTags(tr, n = Inf))
+  cpm_top_df <- as.data.frame(cpm(normalized_count_matrix)[top,])
+
+  # Retrieve significant genes
+  decision_output <- decideTests(tr, adjust.method = "BH", p.value = p_value_threshold)
+  non_zero_rows <- decision_output[rowSums(decision_output != 0) > 0, ]
+  Testdata_allgenes <- topTags(tr, n = Inf)$table
+  significant_genes <- Testdata_allgenes[row.names(Testdata_allgenes) %in% row.names(non_zero_rows), ]
+  print(significant_genes)
+  
+  print(paste("Number of significant genes", nrow(significant_genes)))
+  # Return significant genes
+  return(list(cpm_top_df, qlf, tr, significant_genes))
+}
+
+}
+```
+
+```{r}
+count_matrix <- d_T_outr
+cpm_threshold <- 0.05
+gene_cpm_filter_over_6_samples <- rowSums(cpm(count_matrix) > cpm_threshold) >= 6
+gene_cpm_filter_over_6_samples
+false_counts <- sum(!gene_cpm_filter_over_6_samples)
+print(false_counts)
+  count_matrix_filtered <- count_matrix[gene_cpm_filter_over_6_samples,]
+  lib_sizes_before <- count_matrix$samples$lib.size
+  lib_sizes_before
+  
+  count_matrix_filtered$samples$lib.size <- colSums(count_matrix_filtered$counts)
+  
+  lib_sizes_after <- count_matrix_filtered$samples$lib.size
+  lib_sizes_after
+  rejections_list <- lib_sizes_before - lib_sizes_after
+  rejections_list
+  num_rejections <- sum(rejections_list)  # Count differences larger than 0
+num_rejections
+  
+```
+
+
+## DGE analysis of N.truncata with edgeR
+```{r}
+count_df_T_outr[, -1]
+d_T_outr <- DGEList(counts=count_df_T_outr[, -1],group=meta_df_T_outr$Condition)
+d_T_outr$samples
+```
+```{r}
+# Check the number of genes
+num_genes <- dim(d_T_outr)[1]
+print("Number of genes in TRU")
+print(num_genes)
+```
+
+```{r}
+# Calculate the sum of counts per sample
+sum_counts_per_sample <- apply(d_T_outr$counts, 2, sum)
+print("Sum of counts per sample:")
+print(sum_counts_per_sample)
+```
+
+```{r}
+plot_output_rejections <- plot_num_rejections_vs_cpm_0to1(d_T_outr, 10)
+plot_output_rejections[[2]]
+```
+## Filter at CPM > 0.33!
+```{r}
+plot_output_rejections[[1]]
+```
+
+```{r}
+#plot_output_twenty <- plot_significant_genes_vs_cpm(d_T_outr, 20)
+plot_output_ten_0to1 <- plot_significant_genes_vs_cpm_0to1(d_T_outr, 10)
+```
+
+```{r}
+print(plot_output_ten_0to1[[2]])
+```
+## Filter at CPM > 0.33! 
+```{r}
+print(plot_output_ten_0to1[[1]])
+```
+
+```{r}
+# Second filter option: Filter genes with mean CPM > 0.0526
+gene_cpm_filter_over_6_samples <- rowSums(cpm(d_T_outr) > 0.33) >= 6
+d_T_outr_low_cpm_filtered <- d_T_outr[gene_cpm_filter_over_6_samples,]
+```
+
+
+```{r}
+# Reset library size after filtering
+d_T_outr_low_cpm_filtered$samples$lib.size <- colSums(d_T_outr_low_cpm_filtered$counts)
+d_T_outr_low_cpm_filtered$samples
+```
+```{r}
+filtered_gene_counts <- d_T_outr$samples$lib.size - d_T_outr_low_cpm_filtered$samples$lib.size
+filtered_gene_counts
+```
+
+## Normalize by TMM:
+```{r}
+# Normalize data by TMM (default option)
+#d_T_outr_normalized <- calcNormFactors(d_T_outr_low_cpm_filtered, method="TMM", refColumn=NULL, logratioTrim=.3, sumTrim=0.05, doWeighting=TRUE, Acutoff=-1e10)
+d_T_outr_normalized <- calcNormFactors(d_T_outr_low_cpm_filtered)
+d_T_outr_normalized
+# Visualize sample grouping using MDS plot
+plotMDS(d_T_outr_normalized, method = "bcv", col = as.numeric(d_normalized$samples$group))
+legend("topleft", as.character(unique(d_normalized$samples$group)), col = 1:3, pch = 20)
+print(d_T_outr_normalized$samples)
+```
+```{r}
+before_boxplot <- boxplot(log10(d_T_outr$counts), range=0, las=2)
+
+# apply normalization
+normalized_counts_df <- d_T_outr_normalized$counts / d_T_outr_normalized$samples$norm.factors
+
+after_boxplot <- boxplot(log10(normalized_counts_df), range=0, las=2)
+normalization_boxplots <- list(before_boxplot, after_boxplot)
+normalization_boxplots
+```
+
+
+```{r}
+# create condition design matrix
+condition <- factor(samples_T_outr$Condition)
+design <- model.matrix(~0+condition)
+colnames(design) <- levels(d_T_outr$samples$group)
+design
+
+#Estimate dispersion
+d_disp_TRU <- estimateDisp(d_T_outr_normalized, design, robust = T)
+plotBCV(d_disp_TRU)
+
+#GLM estimates of dispersion (Fit GLM's) 
+design.mat <- model.matrix(~ 0 + d_T_outr$samples$group)
+colnames(design.mat) <- levels(d_T_outr$samples$group)
+
+#d_GLM <- estimateGLMCommonDisp(d_disp_TRU,design.mat)
+#d_GLM <- estimateGLMTrendedDisp(d_disp_TRU,design.mat, method="power")
+#d_GLM <- estimateGLMTagwiseDisp(d_disp_TRU,design.mat)
+#plotBCV(d_GLM)
+
+
+```
+
+```{r}
+
+
+fit <- glmQLFit(d_disp_TRU, design, robust=TRUE)
+plotQLDisp(fit)
+```
+
+
+## Common dispersion estimation of all genes:
+```{r}
+###Differential Expression based on dispersion estimation
+con <- makeContrasts(drought - control, levels=design)
+# con = 1 for drought and -1 for control
+qlf <- glmQLFTest(fit, contrast=con)
+
+# etdc <- exactTest(d_disp_TRU, pair=c(1,2)) #compare groups 0-control and 1-drought
+
+# Perform significance test with fitted disperion model:
+topTags(qlf, n=10)
+summary(decideTests(qlf, adjust.method="BH", p.value=0.05))
+plotMD(qlf)
+
+# Filter with FC 1.5 and perform test:
+tr <- glmTreat(fit, contrast=con, lfc=log2(1.5))
+topTags(tr, n= Inf)
+summary(decideTests(tr, adjust.method="BH", p.value=0.05))
+
+plotMD(tr)
+
+# plot CPM over all samples for top genes
+top <- rownames(topTags(tr))
+cpm(d_T_outr)[top,]
+
+# Retrieve significant genes:
+# get gene names with 1 or -1 values:
+decision_output <- decideTests(tr, adjust.method="BH", p.value=0.05)
+non_zero_rows <- decision_output[rowSums(decision_output != 0) > 0, ]
+
+Testdata_allgenes <- topTags(tr, n=Inf)$table
+significant_genes <- Testdata_allgenes[row.names(Testdata_allgenes) %in% row.names(non_zero_rows), ]
+significant_genes
+print(nrow(significant_genes))
+```
+
+```{r}
+DE_output_TRU <- perform_edgeR_DE_analysis(d_T_outr_normalized, samples_T_outr, "Condition")
+```
+# show CPM of top Genes
+```{r}
+DE_output_TRU[[1]]
+
+```
+
+## save significant genes of TRU
+```{r}
+#save results
+top_genes <- topTags(lrtdc, n = Inf, sort.by = "none")$table
+significant_genes <- DE_output_TRU[[4]]
+significant_genes
+# Sort significant_genes by the absolute value of logFC
+significant_genes <- significant_genes[order(abs(significant_genes$logFC), decreasing = TRUE), ]
+
+# Insert a column for regulation
+significant_genes$Regulation <- ifelse(significant_genes$logFC > 0, "Upregulated", "Downregulated")
+
+# Get the Geneid values corresponding to the indices of significant_genes
+
+row_indices <- as.numeric(rownames(significant_genes))
+  
+geneids <- geneid[row_indices]
+
+# Add the Geneid values as a new column in significant_genes
+significant_genes$Gene_ID <- as.character(geneids)
+
+savepath = "/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/TRU"
+setwd(savepath)
+write.csv(significant_genes, "edgeR_DEgenes_TRU_Root.csv")
+```
+```{r}
+print(significant_genes)
+```
+
+# GO retrieval:
+```{r}
+pacman::p_load("BiocManager", "topGO", "stringr", "GOplot")
+library("topGO")
+library("GOplot")
+library("xtable")
+#library("drake")
+
+topGoAnalysis <- function(ontology, allGenes, gene2GO, nbNodes){
+  GOdata <- new("topGOdata", ontology = ontology, allGenes = allGenes, annot = annFUN.gene2GO, gene2GO = gene2GO)
+  resultWeight01 <- runTest(GOdata, statistic = "fisher")
+  allRes <- GenTable(GOdata, weight01_pval=resultWeight01, orderBy = "weight01", ranksOf = "weight01",topNodes = nbNodes)
+  allRes <- cbind(allRes,"BP")
+  colnames(allRes) <- c("GO.ID","Term","Annotated","Significant","Expected","weight01_pval", "branch")
+  return(allRes)
+}
+
+change_names <- function(data, name_list){
+  colnames(data) <- name_list
+  return(data)
+}
+
+rename <- function(table, geneNames){
+  names(table) <- geneNames
+  return(table)
+}
+
+attach_enriched_go_genes <- function(enriched_go_with_my_genes){
+  enriched_go_with_my_genes.list = c()
+  for (i in 1:length(enriched_go_with_my_genes)){
+    enriched_go_with_my_genes.list = c(enriched_go_with_my_genes.list, enriched_go_with_my_genes[[i]])
+  }
+  return(enriched_go_with_my_genes.list)
+}
+circle_dat <- function(terms, genes){
+  
+  # Data Formating
+  colnames(terms) <- tolower(colnames(terms))
+  terms$genes <- toupper(terms$genes)
+  genes$ID <- toupper(genes$ID)
+  
+  # Parse Gene Lists
+  tgenes <- strsplit(as.vector(terms$genes), ', ')
+  
+  # Count 
+  if (length(tgenes[[1]]) == 1) tgenes <- strsplit(as.vector(terms$genes), ',')
+  count <- sapply(1:length(tgenes), function(x) length(tgenes[[x]]))
+  logFC <- sapply(unlist(tgenes), function(x) genes$logFC[match(x, genes$ID)])
+  
+  if(class(logFC) == 'factor'){
+    logFC <- gsub(",", ".", gsub("\\.", "", logFC))
+    logFC <- as.numeric(logFC)
+  }
+  
+  # Calculate Z-score:
+  s <- 1; zsc <- c()
+  for (c in 1:length(count)){
+    value <- 0
+    e <- s + count[c] - 1
+    value <- logFC[s:e]
+    #value <- sapply(logFC[s:e], function(x) ifelse(x > 0, 1, -1))
+    zsc <- c(zsc, sum(value, na.rm = F) / sqrt(count[c])) #### HERE : na.rm = TRUE, takes all the genes into account !
+    s <- e + 1
+  }
+  if (is.null(terms$id)){
+    df <- data.frame(category = rep(as.character(terms$category), count), term = rep(as.character(terms$term), count),
+                     count = rep(count, count), genes = as.character(unlist(tgenes)), logFC = logFC, adj_pval = rep(terms$adj_pval, count),
+                     zscore = rep(zsc, count), stringsAsFactors = FALSE)
+  }else{
+    df <- data.frame(category = rep(as.character(terms$category), count), ID = rep(as.character(terms$id), count), term = rep(as.character(terms$term), count),
+                     count = rep(count, count), genes = as.character(unlist(tgenes)), logFC = logFC, adj_pval = rep(terms$adj_pval, count),
+                     zscore = rep(zsc, count), stringsAsFactors = FALSE)
+  }
+  return(df)
+}
+
+plot_GO <- function(data_GO,loc){
+  #read in data matrix
+  data <- read.table(data_GO, sep = "\t")
+  colnames(data) <- c("category","ID","term","count","adj_pval","zscore")
+  # define colors of bars by zscores
+  ggplot(data, aes(x=reorder(term,zscore),y=-log10(adj_pval)))+ #x=reorder(term,zscore),y=-log10(adj_pval)
+    #labs(title=paste0("Loc ",loc)) +
+    geom_col(aes(fill = zscore)) +
+    scale_fill_gradient(low="blueviolet",high="goldenrod1", 
+                        labels=c(paste0("Underexpressed","\n","in L"),
+                                 paste0("Overexpressed","\n", "in L")),
+                        breaks=c(min(data$zscore),max(data$zscore)),
+                        limits=c(min(data$zscore),max(data$zscore))) +
+    geom_text(aes(label=count), 
+              hjust=-1, size=5) +
+    xlab("")+
+    theme_bw()+
+    coord_flip(ylim = c(0, 5.3)) +
+    #scale_y_reverse() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank())+
+    #coord_cartesian(ylim = c(0, 4.6))+
+    theme(axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.3,
+      vjust = 0.5))+
+    theme(text=element_text(family="Arial"))+
+    theme(axis.text=element_text(size=15), axis.text.y = element_text(size=15)) +
+    #       axis.title=element_text(size=14,face="bold"))
+    theme(legend.text=element_text(size=13),
+          legend.title = element_text(size=15, vjust=2.1),
+          axis.title.x = element_text(size=15))
+}
+
+#Make barplot of up and down-regulated functions
+GOBar <- function(data, display, order.by.zscore = T, title, zsc.col, contrast){
+  id <- adj_pval <- zscore <- NULL
+  colnames(data) <- tolower(colnames(data))
+  data$adj_pval <- -log(data$adj_pval, 10)
+  sub <- data[!duplicated(data$term), ]
+  sub <- sub[order(sub$zscore, decreasing = T), ]
+  print(min(sub$zscore))
+  print(max(sub$zscore))
+  g <-  ggplot(sub, aes(y = factor(term, levels = rev(unique(stats::reorder(term, adj_pval)))), x = adj_pval, fill = zscore)) +
+    geom_bar(stat = 'identity', position=position_dodge()) +
+    theme_bw() +
+    scale_fill_gradient2('Log(FC)\n(z-score)\n', space = 'Lab',
+                     guide = guide_colourbar(title.position = "top", title.hjust = 0),
+                     breaks = c(min(sub$zscore), max(sub$zscore)),
+                     low = "blue", mid = "white", high = "red") +
+    scale_color_manual(values=c("black", "black", "black"), guide = "none") +
+    labs(title = '', y = '', x = '-log (adj p-value)') +
+    geom_text(aes(y=term, x=-0.4, label=count, color = "black")) + theme(axis.text.y = element_text(size = 12))
+  g
+}
+```
+
+```{r}
+
+analyze_DE_genes_GO_Terms <- function(deGenes) {
+  # Assuming you have other necessary objects and functions defined
+  
+  name_list = c("GO.ID","Term","Annotated","Significant","Expected","weight01_pval", "branch")
+  table = as.factor(geneNames) %in% deGenes$Gene_ID
+  int_table = as.integer(table)
+  int_fac_table = factor(int_table)
+  fac_table = rename(table = int_fac_table, geneNames = geneNames)
+
+  GOdata_BP = new("topGOdata", ontology = "BP", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  GOdata_MF = new("topGOdata", ontology = "MF", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  GOdata_CC = new("topGOdata", ontology = "CC", allGenes = fac_table, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+  resultWeight01_BP = runTest(GOdata_BP, statistic = "fisher")
+  resultWeight01_MF = runTest(GOdata_MF, statistic = "fisher")
+  resultWeight01_CC = runTest(GOdata_CC, statistic = "fisher")
+
+  allRes_BP1 = GenTable(GOdata_BP, weight01_pval=resultWeight01_BP, orderBy = "weight01", ranksOf = "weight01",topNodes = 4888)
+  allRes_MF1 = GenTable(GOdata_MF, weight01_pval=resultWeight01_MF, orderBy = "weight01", ranksOf = "weight01",topNodes = 2436)
+  allRes_CC1 = GenTable(GOdata_CC, weight01_pval=resultWeight01_CC, orderBy = "weight01", ranksOf = "weight01",topNodes = 929)
+ return(list(list(GOdata_BP, resultWeight01_BP), list(GOdata_MF, resultWeight01_MF), list(GOdata_CC, resultWeight01_CC), list(allRes_BP1, allRes_MF1, allRes_CC1)))
+}
+``` 
+
+```{r}
+structure_DE_genes_GO_data <- function(GOdata_BP, GOdata_MF, GOdata_CC, allRes_BP1, allRes_MF1, allRes_CC1, FDR = 0.05){
+  # Structure Dataframes:
+  allRes_BP2 = cbind(allRes_BP1,"BP")
+  allRes_MF2 = cbind(allRes_MF1,"MF")
+  allRes_CC2 = cbind(allRes_CC1,"CC")
+  
+  allRes_BP = change_names(data = allRes_BP2, name_list = name_list)
+  allRes_MF = change_names(data = allRes_MF2, name_list = name_list)
+  allRes_CC = change_names(data = allRes_CC2, name_list = name_list)
+  
+  allRes1 = rbind(allRes_BP, allRes_MF)
+  allRes = rbind(allRes1, allRes_CC)
+
+  allGO = c(genesInTerm(GOdata_BP), genesInTerm(GOdata_MF), genesInTerm(GOdata_CC))
+
+  # Create final table
+  SAM_ANOTATION = lapply(allGO, function(x) x[x %in% deGenes$Gene_ID])
+  enriched_go_with_my_genes = lapply(SAM_ANOTATION[allRes[, 1]], paste0, collapse = ", ")
+  enriched_go_with_my_genes.list = attach_enriched_go_genes(enriched_go_with_my_genes)
+  go_dataframe = data.frame("Category" = allRes$branch, "ID" = allRes$GO.ID, "Term" = allRes$Term, "Genes" = as.vector(enriched_go_with_my_genes.list), "adj_pval" = as.numeric(sub(",", ".", allRes$weight01_pval, fixed = TRUE)))
+
+  DE_genes = deGenes
+  EC_genelist = data.frame("ID" = DE_genes$Gene_ID, "logFC" = DE_genes$logFC, "logCPM" = DE_genes$logCPM, "P.Value" = DE_genes$PValue)
+  circ = circle_dat(go_dataframe, EC_genelist)
+  circ_significant <- circ[circ$adj_pval <= FDR,]
+  reduced_circ <- reduce_overlap(circ_significant, overlap = 0.6)
+  
+  # Return the final tables and plot
+  return(list(go_dataframe = go_dataframe, reduced_circ, EC_genelist,  circ, circ_significant))
+}  
+  
+plot_all_GO_data <- function(reduced_circ, 
+                             Method, species, contrast, background, 
+                             savepath, 
+                             CPM, FDR, logFC){
+  contrast = "DroughtvsControl"
+  
+  plot_GO_BP <- GOBar(subset(reduced_circ, category == 'BP'), contrast = contrast)
+  plot_GO_MF <- GOBar(subset(reduced_circ, category == 'MF'), contrast = contrast)
+  plot_GO_CC <- GOBar(subset(reduced_circ, category == 'CC'), contrast = contrast)
+  # Save the plot to a PDF file
+  setwd(savepath)
+  ggsave(paste0(Method,"_", "Barplot_TopGOBP_LogFC_Zscore.", species, "_", contrast,"_", background, "_at","CPM", CPM, "_FDR", FDR,"_FC", logFC, ".pdf"), plot_GO_BP, width = 12, height = 6)
+  ggsave(paste0(Method,"_", "Barplot_TopGOMF_LogFC_Zscore.", species, "_", contrast,"_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, ".pdf"), plot_GO_MF, width = 12, height = 6)
+  ggsave(paste0(Method,"_", "Barplot_TopGOCC_LogFC_Zscore.", species, "_", contrast,"_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, ".pdf"), plot_GO_CC, width = 12, height = 6)
+
+  # Return the final tables and plot
+  return(list(plot_GO_BP, plot_GO_MF, plot_GO_CC))
+}
+
+create_GO_network_graphs <- function(GO_data_BP, resultWeight_BP, GO_data_MF, resultWeight_MF,
+                                     GO_data_CC, resultWeight_CC, 
+                                     Method, species, contrast, background, 
+                                     Nodes = 10, 
+                                     savepath,
+                                     CPM, FDR, logFC){
+  setwd(savepath)
+  printGraph(GOdata_BP, resultWeight_BP, firstSigNodes = 10, fn.prefix = paste0(Method,"_","GO_Network_BP", "_", species, "_",
+                                                                                contrast, "_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, "_N", Nodes), useInfo = "all", pdfSW = TRUE)
+  
+  printGraph(GOdata_MF, resultWeight_MF, firstSigNodes = 10, fn.prefix = paste0(Method,"_","GO_Network_MF", "_", species, "_",
+                                                                                contrast, "_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, "_N", Nodes), useInfo = "all", pdfSW = TRUE)
+  
+  printGraph(GOdata_CC, resultWeight_CC, firstSigNodes = 10, fn.prefix = paste0(Method,"_","GO_Network_CC", "_", species, "_",
+                                                                                contrast, "_", background, "_atCPM", CPM, "_FDR", FDR,"_FC", logFC, "_N", Nodes), useInfo = "all", pdfSW = TRUE)
+  
+}
+```
+
+
+```{r}
+#Load data
+geneID2GO <- readMappings(file = "/Users/daviddornig/Documents/botany_project/data/nblab360_annotation_topGO.csv", IDsep = ";")
+GO2geneID <- inverseList(geneID2GO)
+geneNames <- names(geneID2GO)
+deGenes_TRU_edgeR <- read.csv("/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/TRU/edgeR_DEgenes_TRU_Root.csv", row.names = 1)
+```
+## Filter over 6 samples CPM = 0.0526, FDR < 0.05, logFC > 1.5: Retrieve GO, calculate Z-Score Statistics, plot histograms and networks
+```{r}
+output1_TRU_edgeR = analyze_DE_genes_GO_Terms(deGenes_TRU_edgeR)
+
+output2_TRU_edgeR = structure_DE_genes_GO_data(output1_TRU_edgeR[[1]][[1]], output1_TRU_edgeR[[2]][[1]], output1_TRU_edgeR[[3]][[1]],
+                                               output1_TRU_edgeR[[4]][[1]], output1_TRU_edgeR[[4]][[2]], output1_TRU_edgeR[[4]][[3]],
+                                               FDR = 0.05)
+
+
+go_dataframe_TRU_edgeR <- output2_TRU_edgeR[[1]]
+
+Method = "edgeR"
+species = "TR"
+contrast = "DvC"
+background = "FDR005FC2"
+savepath <- "/Users/daviddornig/Documents/botany_project/Images/DGE/edgeR"
+go_plots_TRU_edgeR <- plot_all_GO_data(output2_TRU_edgeR[[2]], Method, species, contrast, background, savepath)
+
+create_GO_network_graphs(output1_TRU_edgeR[[1]][[1]], output1_TRU_edgeR[[1]][[2]], output1_TRU_edgeR[[2]][[1]],
+                         output1_TRU_edgeR[[2]][[2]], output1_TRU_edgeR[[3]][[1]], output1_TRU_edgeR[[3]][[2]],
+                         Method, species, contrast, background, Nodes=5, savepath)
+
+```
+
+```{r}
+go_plots_TRU_edgeR
+```
+
+
+## DGE analysis of N.excelsior with edgeR:
+```{r}
+d_E_outr <- DGEList(counts=count_df_E_outr[, -1],group=meta_df_E_outr$Condition)
+print(d_E_outr$samples)
+```
+```{r}
+# Check the number of genes
+num_genes <- dim(d_E_outr)[1]
+print("Number of genes in EXC")
+print(num_genes)
+```
+
+```{r}
+# Calculate the sum of counts per sample
+sum_counts_per_sample <- apply(d_E_outr$counts, 2, sum)
+print("Sum of counts per sample:")
+print(sum_counts_per_sample)
+```
+
+```{r}
+rejections_EXC <- plot_num_rejections_vs_cpm_0to1(d_E_outr,10)
+rejections_EXC[[2]]
+```
+```{r}
+rejections_EXC[[1]]
+```
+
+```{r}
+plot_output_ten_0to1_EXC <- plot_significant_genes_vs_cpm_0to1(d_E_outr, 10)
+```
+
+
+
+```{r}
+print(plot_output_ten_0to1_EXC[[2]])
+```
+
+```{r}
+df_output_ten_0to1_EXC <- plot_output_ten_0to1_EXC[[1]]
+df_output_ten_0to1_EXC
+```
+## CPM threshold > 0.333
+```{r}
+# Fit a spline curve to the data
+spline_fit <- smooth.spline(df_output_ten_0to1_EXC$CPM_Threshold, df_output_ten_0to1_EXC$Significant_Genes)
+#geom_line(data = data.frame(x = spline_derivative$x, y = spline_derivative$y), aes(x = x, y = y), color = "green")
+plot <- ggplot(df_output_ten_0to1_EXC, aes(x = CPM_Threshold, y = Significant_Genes)) +
+  geom_point() +  # Original data points
+  geom_line(data = data.frame(x = spline_fit$x, y = spline_fit$y), aes(x = x, y = y), color = "blue") +  # Fitted spline curve
+  geom_point(x = 0.3333, y = 789, color = "red", size = 3) +  # Filtered point
+  labs(x = "CPM Threshold", y = "Number of Significant Genes") +
+  theme_minimal()
+  print(plot)
+```
+
+
+
+```{r}
+# Keep genes if they have a CPM in at least 6 samples greater than threshold
+CPM_threshold <- 0.333
+gene_keep_criteria <- rowSums(cpm(d_E_outr) > CPM_threshold) >= 6
+d_E_outr_low_cpm_filtered <- d_E_outr[gene_keep_criteria,]
+```
+
+
+```{r}
+# Reset library size after filtering
+d_E_outr_low_cpm_filtered$samples$lib.size <- colSums(d_E_outr_low_cpm_filtered$counts)
+print(d_E_outr_low_cpm_filtered$samples)
+```
+
+## Normalize by TMM:
+```{r}
+# Normalize data by TMM (default option)
+d_E_outr_normalized <- calcNormFactors(d_E_outr_low_cpm_filtered)
+
+# Visualize sample grouping using MDS plot
+plotMDS(d_E_outr_normalized, method = "bcv", col = as.numeric(d_normalized$samples$group))
+legend("topleft", as.character(unique(d_normalized$samples$group)), col = 1:3, pch = 20)
+print(d_E_outr_normalized$samples)
+```
+
+# Filter significant genes of EXC with FDR < 0.05, logFC > 1.5 (CPM > 0.0526) and save them:
+
+```{r}
+DE_output_EXC <- perform_edgeR_DE_analysis(d_E_outr_normalized, samples_E_outr, "Condition", 1.5, 0.05)
+```
+
+## Save Results
+```{r}
+significant_genes_EXC <- DE_output_EXC[[4]]
+
+# Sort significant_genes by the absolute value of logFC
+significant_genes_EXC <- significant_genes_EXC[order(abs(significant_genes_EXC$logFC), decreasing = TRUE), ]
+
+# Insert a column for regulation
+significant_genes_EXC$Regulation <- ifelse(significant_genes_EXC$logFC > 0, "Upregulated", "Downregulated")
+
+# Get the Geneid values corresponding to the indices of significant_genes
+
+row_indices <- as.numeric(rownames(significant_genes_EXC))
+  
+geneids <- geneid[row_indices]
+
+# Add the Geneid values as a new column in significant_genes
+significant_genes_EXC$Gene_ID <- as.character(geneids)
+
+savepath = "/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/EXC"
+setwd(savepath)
+write.csv(significant_genes_EXC, "edgeR_DEgenes_EXC_Root_CPM33.csv")
+```
+```{r}
+print(significant_genes_EXC)
+```
+# topGO Analysis
+```{r}
+#Load data
+geneID2GO <- readMappings(file = "/Users/daviddornig/Documents/botany_project/data/nblab360_annotation_topGO.csv", IDsep = ";")
+GO2geneID <- inverseList(geneID2GO)
+geneNames <- names(geneID2GO)
+deGenes_EXC_edgeR <- read.csv("/Users/daviddornig/Documents/botany_project/data/TRU_EXC_Roots/EXC/edgeR_DEgenes_EXC_Root_CPM33.csv", row.names = 1)
+```
+
+## CPM>0.0526, FDR < 0.05, logFC > 1.5:
+```{r}
+output1_EXC_edgeR = analyze_DE_genes_GO_Terms(deGenes_EXC_edgeR)
+
+output2_EXC_edgeR = structure_DE_genes_GO_data(output1_EXC_edgeR[[1]][[1]], output1_EXC_edgeR[[2]][[1]], output1_EXC_edgeR[[3]][[1]],
+                                               output1_EXC_edgeR[[4]][[1]], output1_EXC_edgeR[[4]][[2]], output1_EXC_edgeR[[4]][[3]],
+                                               FDR = 0.05)
+
+
+go_dataframe_EXC_edgeR <- output2_EXC_edgeR[[1]]
+
+Method = "edgeR"
+species = "ER"
+contrast = "DvC"
+background = "FDR005FC2"
+savepath <- "/Users/daviddornig/Documents/botany_project/Images/DGE/edgeR"
+go_plots_EXC_edgeR <- plot_all_GO_data(output2_EXC_edgeR[[2]], Method, species, contrast, background, savepath)
+
+create_GO_network_graphs(output1_EXC_edgeR[[1]][[1]], output1_EXC_edgeR[[1]][[2]], output1_EXC_edgeR[[2]][[1]],
+                         output1_EXC_edgeR[[2]][[2]], output1_EXC_edgeR[[3]][[1]], output1_EXC_edgeR[[3]][[2]],
+                         Method, species, contrast, background, Nodes=5, savepath)
+
+```
+
+```{r}
+go_plots_EXC_edgeR
+```
+## GO TERMS of EXC with different filter: (DSEQdata retrieval, CPM filter, TMM normalization, sign.gene filtering)
+```{r}
+
+define_outliers_and_return_tables <- function(count_df, meta_df, outlier_samples) {
+  # Remove outlier samples from count_df
+  count_df_outr <- count_df[, !colnames(count_df) %in% outlier_samples]
+  
+  # Remove outlier samples from meta_df
+  meta_df_outr <- meta_df[!meta_df$Abbrevations %in% outlier_samples, ]
+  
+  # Create a dataframe of sample information without outliers
+  samples_outr <- data.frame(
+    row.names = meta_df_outr$Abbrevations,
+    Condition = meta_df_outr$Condition,
+    Species = meta_df_outr$Species
+  )
+  
+  # Retrieve EXC tables
+  all_control_samples <- grep("T", names(count_df_outr), value = TRUE)
+  count_df_E_outr <- count_df_outr[, !colnames(count_df_outr) %in% all_control_samples]
+  meta_df_E_outr <- meta_df_outr[!meta_df_outr$Abbrevations %in% all_control_samples, ]
+  samples_E_outr <- data.frame(row.names=meta_df_E_outr$Abbrevations, Condition=meta_df_E_outr$Condition, Species=meta_df_E_outr$Species)
+  
+  # Retrieve TRU tables
+  all_control_samples <- grep("E", names(count_df_outr), value = TRUE)
+  count_df_T_outr <- count_df_outr[, !colnames(count_df_outr) %in% all_control_samples]
+  meta_df_T_outr <- meta_df_outr[!meta_df_outr$Abbrevations %in% all_control_samples, ]
+  samples_T_outr <- data.frame(row.names=meta_df_T_outr$Abbrevations, Condition=meta_df_T_outr$Condition, Species=meta_df_T_outr$Species)
+  
+  return(list(list(count_df_outr = count_df_outr,
+              meta_df_outr = meta_df_outr, 
+              samples_outr = samples_outr), 
+              list(count_df_E_outr, meta_df_E_outr, samples_E_outr), 
+              list(count_df_T_outr, meta_df_T_outr, samples_T_outr)))
+}
+
+
+```
+
+
+```{r}
+outliers_samples <- c("EDR61", "ECR65", "TCR92")
+#outliers_samples <- c("TCR92")
+otheroutliers <- define_outliers_and_return_tables(count_df, meta_df, outliers_samples)
+count_E_new_outr <- otheroutliers[[2]][[1]]
+samples_E_new_outr <- otheroutliers[[2]][[3]]
+
+CPM_threshold = 0.33
+FDR_threshold <- 0.05
+logFC_threshold <- 1.5
+CPM_gene_output <- edgeR_sign_genes_for_treshold(count_E_new_outr, samples_E_new_outr, CPM_threshold, FDR_threshold)
+CPM_gene_output[[2]]
+```
+
+
+```{r}
+output1_EXC_edgeR = analyze_DE_genes_GO_Terms(CPM_gene_output[[2]])
+
+output2_EXC_edgeR = structure_DE_genes_GO_data(output1_EXC_edgeR[[1]][[1]], output1_EXC_edgeR[[2]][[1]], output1_EXC_edgeR[[3]][[1]],
+                                               output1_EXC_edgeR[[4]][[1]], output1_EXC_edgeR[[4]][[2]], output1_EXC_edgeR[[4]][[3]],
+                                               FDR = 0.05)
+
+
+go_dataframe_EXC_edgeR <- output2_EXC_edgeR[[1]]
+
+Method = "edgeR"
+species = "ER"
+contrast = "DvC"
+background = "61_65_92_outliers"
+savepath <- "/Users/daviddornig/Documents/botany_project/Images/DGE/edgeR"
+go_plots_EXC_edgeR <- plot_all_GO_data(output2_EXC_edgeR[[2]], Method, species, contrast, background, savepath, CPM_threshold, FDR_threshold, logFC_threshold)
+
+create_GO_network_graphs(output1_EXC_edgeR[[1]][[1]], output1_EXC_edgeR[[1]][[2]], output1_EXC_edgeR[[2]][[1]],
+                         output1_EXC_edgeR[[2]][[2]], output1_EXC_edgeR[[3]][[1]], output1_EXC_edgeR[[3]][[2]],
+                         Method, species, contrast, background, Nodes=5, savepath, CPM_threshold, FDR_threshold, logFC_threshold)
+
+```
+
+```{r}
+go_plots_EXC_edgeR
+```
+
+
+
+
+
+## Testing topGO
+```{r}
+library(ALL)
+library(topGO)
+library(ALL)
+data(ALL)
+data(geneList)
+head(topDiffGenes(geneList))
+indices <- as.integer(rownames(top_genes))
+geneids <- geneid[indices]
+top_genes$Gene_ID <- as.character(geneids)
+
+topDiffGenes_EXC <- function(gene_name, genes_of_interest) {
+  bool <- gene_name %in% genes_of_interest
+  selected_gene <- setNames(bool, top_genes$Gene_ID)
+  return(selected_gene)
+}
+topDiffGenes_EXC <- function(geneList, FDR_thresh = 0.05, logCPM_thresh = 1.5) {
+  # Initialize an empty logical vector to store the results for each gene
+  result <- logical(length(geneList))
+  
+  # Iterate over each gene in geneList
+  for (i in seq_along(geneList)) {
+    FDR_value <- geneList[[i]][1]  # Extract the FDR value for the current gene
+    logCPM_value <- geneList[[i]][2]  # Extract the logCPM value for the current gene
+    
+    # Check if the current gene meets the thresholds
+    result[i] <- FDR_value < FDR_thresh & logCPM_value > logCPM_thresh
+  }
+  
+  # Return the result for each gene as a named vector
+  return(setNames(result, names(geneList)))
+}
+
+topDiffGenes_EXC <- function(geneList, FDR_thresh = 0.05) {
+  # Initialize an empty logical vector to store the results for each gene
+  result <- logical(length(geneList))
+  
+  # Iterate over each gene in geneList
+  for (i in seq_along(geneList)) {
+    FDR_value <- geneList[[i]]  # Extract the FDR value for the current gene
+
+    # Check if the current gene meets the thresholds
+    result[i] <- FDR_value < FDR_thresh
+  }
+  
+  # Return the result for each gene as a named vector
+  return(setNames(result, names(geneList)))
+}
+
+# Create a list of two factors (FDR and logCPM)
+geneList_EXC <- list(FDR = top_genes$FDR, logCPM = top_genes$logCPM)
+
+# Use Map to combine gene ID with FDR and logCPM
+geneList_EXC <- Map(function(gene_id, fdr, logcpm) c( fdr, logcpm), 
+                    gene_id = top_genes$Gene_ID, 
+                    fdr = top_genes$FDR, 
+                    logcpm = top_genes$logCPM)
+
+# Set names for the list elements using gene IDs
+geneList_EXC <- setNames(geneList_EXC, top_genes$Gene_ID)
+
+```
+```{r}
+geneList_EXC <- setNames(top_genes$FDR, top_genes$Gene_ID)
+head(geneList_EXC[1])
+GOdata.BP_test = new("topGOdata", ontology = "BP", allGenes = geneList_EXC,  geneSel = topDiffGenes_EXC, nodeSize=10, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+```
+```{r}
+GOdata.BP_test
+```
+```{r}
+ resultFisher <- runTest(GOdata.BP_test, algorithm = "classic", statistic = "fisher")
+resultFisher
+```
+```{r}
+resultKS <- runTest(GOdata.BP_test, algorithm = "classic", statistic = "ks")
+resultKS.elim <- runTest(GOdata.BP_test, algorithm = "elim", statistic = "ks")
+```
+
+```{r}
+allRes <- GenTable(GOdata.BP_test, classicFisher = resultFisher,
+        classicKS = resultKS, elimKS = resultKS.elim,
+        orderBy = "elimKS", ranksOf = "classicFisher", topNodes = 20)
+allRes
+```
+```{r}
+pValue.classic <- score(resultKS)
+pValue.elim <- score(resultKS.elim)[names(pValue.classic)]
+gstat <- termStat(GOdata.BP_test, names(pValue.classic))
+gSize <- gstat$Annotated / max(gstat$Annotated) * 4
+colMap <- function(x) {
+  .col <- rep(rev(heat.colors(length(unique(x)))), time = table(x))
+  return(.col[match(1:length(x), order(x))])
+}
+
+gCol <- colMap(gstat$Significant)
+plot(pValue.classic, pValue.elim, xlab = "FDR classic", ylab = "FDR elim",
+ pch = 19, cex = gSize, col = gCol)
+```
+```{r}
+sel.go <- names(pValue.classic)[pValue.elim < pValue.classic]
+cbind(termStat(GOdata.BP_test, sel.go),
+elim = pValue.elim[sel.go],
+classic = pValue.classic[sel.go])
+```
+```{r}
+library(Rgraphviz)
+library(topGO)
+
+# Run the plotting function
+showSigOfNodes(GOdata.BP_test, score(resultKS.elim), firstSigNodes = 3, useInfo = 'all')
+
+printGraph(GOdata.BP_test, resultKS.elim, firstSigNodes = 10, fn.prefix = "tGO", useInfo = "all", pdfSW = TRUE)
+print(plot_list)
+# Draw the plot
+saveGraph(plot_list, file = "showSigOfNodes_output.pdf", format = "pdf")
+toFile(plot_list, layoutType="dot", filename="test_dot.svg", fileType="svg")
+write.graph(plot_list, file = "graph_file.txt", format = "ncol")
+
+adj_matrix <- as_adjacency_matrix(showSigOfNodes(GOdata.BP_test, score(resultKS.elim), firstSigNodes = 3, useInfo = 'all'))
+
+# Create igraph object from the adjacency matrix
+igraph_graph <- graph_from_adjacency_matrix(adj_matrix, mode = "undirected")
+
+# Convert igraph object to a networkD3-compatible data frame
+network_data <- igraph_to_networkD3(plot_list)
+
+# Create an interactive force-directed network plot
+forceNetwork(Links = network_data$links, Nodes = network_data$nodes, 
+             Source = "source", Target = "target", NodeID = "name", 
+             Group = "group", opacity = 0.9)
+```
+## Testing CPM vs sign Genes plotting:
+```{r}
+calculate_num_significant_genes <- function(count_matrix, cpm_threshold, FDR = 0.05, lfc_threshold = 1.5) {
+  print(cpm_threshold)
+  # Filter genes with mean CPM > threshold
+  gene_cpm_filter <- apply(cpm(count_matrix), 1, function(x) !(mean(x) < cpm_threshold))
+  count_matrix_filtered <- count_matrix[gene_cpm_filter,]
+  size_count_matrix_filtered <- dim(count_matrix_filtered)
+  num_rows <- size_count_matrix_filtered[1]
+  #gene_keep_criteria <- rowSums(cpm(d) > 10) >= 6
+  #d_T_outr_high_cpm_filtered <- d_T_outr[gene_keep_criteria,]
+  
+  # Normalize data by TMM
+  normalized_data <- calcNormFactors(count_matrix_filtered, method = "TMM")
+  
+  # Design matrix for GLM
+  design_mat <- model.matrix(~ 0 + count_matrix$samples$group)
+  colnames(design.mat) <- levels(count_matrix$samples$group)
+
+  # GLM testing for differential expression
+  d_disp <- estimateDisp(normalized_data, robust = T)
+  d_GLM <- estimateGLMTagwiseDisp(d_disp, design_mat)
+  
+  d_fit <- glmFit(d_GLM, design_mat)
+  lrtdc <- glmLRT(d_fit, contrast = c(-1, 1))  # Compare groups: 1-control and -1-drought
+  
+  # Get the number of differentially expressed genes (at FDR < 0.05 and log2-fold-change > threshold)
+  deGLM <- decideTestsDGE(lrtdc, adjust.method = "BH", p.value = FDR, lfc = lfc_threshold)
+  significant_genes <- rownames(count_matrix_filtered)[as.logical(deGLM)]
+  num_significant_genes <- length(significant_genes)
+  print(num_rows)
+  return(list(num_rows, num_significant_genes))
+}
+
+plot_significant_genes_vs_cpm <- function(count_matrix, max_cpm = 10, FDR = 0.05, lfc_threshold = 1.5) {
+  cpm_values <- 1:max_cpm
+  df <- data.frame(CPM_Threshold = cpm_values, Significant_Genes = numeric(length(cpm_values)), Num_Rows = numeric(length(cpm_values)))
+  
+  for (i in 1:length(cpm_values)) {
+    cpm_threshold <- cpm_values[i]
+    calculation_output <- calculate_num_significant_genes(count_matrix, cpm_threshold, FDR, lfc_threshold)
+    df[i, "Num_Rows"] <- calculation_output[[1]]  
+    df[i, "Significant_Genes"] <- calculation_output[[2]]
+  }
+  
+  sign_gene_threshold_plot <- ggplot(df, aes(x = CPM_Threshold, y = Significant_Genes)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "CPM Threshold", y = "Number of Significant Genes") +
+    theme_minimal()
+  
+  return(list(df, sign_gene_threshold_plot))
+}
+
+```
