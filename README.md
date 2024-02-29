@@ -1,7 +1,7 @@
 # EvoecoNico
 Nicotiana project: Differential Expression Analysis 
 
-WS23/24 project of the Plant Ecological Genomics in the botany institutue of University of Vienna.
+WS23/24 project of the Plant Ecological Genomics in the botany institute of University of Vienna.
 
 Includes many edgeR, DESeq2 and plot_ly functions for efficient Differential Expression Analysis pipelines.
 
